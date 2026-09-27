@@ -1,0 +1,109 @@
+# release.yml — publish @felipegenef/opencode-sebas to npm.
+#
+# WHY THIS EXISTS: local publishing is blocked by the account's 2FA challenge,
+# so the classic CI publish does it instead — standard actions/setup-node
+# registry-url pattern, authenticated only through a repository secret.
+#
+# BEFORE THE FIRST RELEASE, two one-time things live in the REPO (never in
+# this file, never committed):
+#   1. NPM_TOKEN — a granular npm access token (or classic Automation token)
+#      with publish rights for the @felipegenef scope. Create it on npmjs.com
+#      → Access Tokens, then save it here: Settings → Secrets and variables →
+#      Actions → New repository secret, name NPM_TOKEN.
+#   2. A release tag. From a clean main:
+#        git tag v1.0.2 && git push --tags
+#      The tag must be v<the version in plugin/package.json> — the version
+#      guard below refuses anything else before publishing.
+#
+# Publishing happens ONLY on v* tags. workflow_dispatch (with a version input)
+# runs the same gate and a `npm publish --dry-run` rehearsal, publishing
+# nothing — it exists to prove a release WOULD work before the tag is cut.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to rehearse (must match plugin/package.json)'
+        required: true
+        default: '1.0.1'
+
+# Publishing needs nothing from the repo: no contents write, no tokens in
+# code. The npm auth comes in as NODE_AUTH_TOKEN per step below.
+permissions:
+  contents: read
+
+jobs:
+  # The full test matrix gate (unit + install-smoke + package dry run, on all
+  # three OSes) reuses ci.yml verbatim: a release can never publish code that
+  # CI would reject, and the two workflows can never drift apart.
+  test-gate:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: publish to npm
+    needs: test-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # registry-url is what writes the .npmrc that maps NODE_AUTH_TOKEN to
+      # registry.npmjs.org — the documented setup-node publish pattern.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Version guard
+        shell: bash
+        env:
+          # Through the environment, never interpolated into shell text.
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./plugin/package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            # A tag that does not match package.json would publish a version
+            # npm already has (or one nobody asked for): stop before trying.
+            test "$GITHUB_REF_NAME" = "v$PKG_VERSION" || {
+              echo "tag $GITHUB_REF_NAME does not match package.json $PKG_VERSION" >&2
+              exit 1
+            }
+          else
+            test "$INPUT_VERSION" = "$PKG_VERSION" || {
+              echo "input version $INPUT_VERSION does not match package.json $PKG_VERSION" >&2
+              exit 1
+            }
+          fi
+          echo "releasing $PKG_VERSION"
+
+      - name: Build the package
+        shell: bash
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          # The plugin is bun-first (bun.lock is the lockfile): `npm ci` has
+          # no package-lock.json to work from and falls through to bun. The
+          # build is required — the npm files whitelist ships dist/.
+          npm ci || bun install --frozen-lockfile
+          bun run build
+
+      - name: Publish (tags only)
+        if: github.ref_type == 'tag'
+        shell: bash
+        working-directory: plugin
+        env:
+          # The token never appears in the repo or in logs; it exists only as
+          # the NPM_TOKEN repository secret.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Rehearsal only (workflow_dispatch publishes nothing)
+        if: github.ref_type != 'tag'
+        shell: bash
+        working-directory: plugin
+        run: npm publish --dry-run --access public

@@ -221,6 +221,11 @@ Tests never touch a live system: path resolution runs against throwaway
 directory layouts, the migration tests only read their own temp files, and no
 test plays audio or contacts the voice daemon.
 
+The same suites run in CI on Ubuntu, Windows and macOS, together with an
+install smoke that packs the npm tarball, runs the platform installer and
+talks JSON-RPC to the installed server (`ci` workflow in `.github/workflows/`).
+Add tests for anything the smoke would otherwise be the first to catch.
+
 ## License
 
 MIT

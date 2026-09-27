@@ -248,6 +248,9 @@ re-shown. Cards stack — one per parked message — and each plays in its own t
 
 ## Troubleshooting
 
+The three-platform install (Linux, Windows, macOS) is verified in CI on every
+push — see [CI](#ci) — so a setup failure on one OS is caught before release.
+
 **Nothing is spoken.** Ask Sebas for `voice_status`. If it answers
 `{"status": "installing"}`, the voice runtime is still being set up — speech
 appears by itself when it finishes (no restart). If the engine is missing after
@@ -282,6 +285,25 @@ voice-runtime install. The installer's own output lands beside it in
 More detail: [`plugin/README.md`](plugin/README.md) · adapter research:
 [`docs/notify-adapters.md`](docs/notify-adapters.md) · release history:
 [`CHANGELOG.md`](CHANGELOG.md).
+
+## CI
+
+Two workflows run on GitHub-hosted runners:
+
+- **`ci`** (every push to `main`, every pull request) — on **Ubuntu, Windows
+  and macOS**: the Python and bun test suites, then the real install smoke —
+  `npm pack` the plugin, install the tarball into a temp prefix, run the
+  platform installer (`setup.sh` / `setup.ps1`) against a scratch data dir,
+  and talk JSON-RPC to the installed voice server to prove `voice_status`
+  answers `ok` and `speak` produces a `.wav` (never played: `play:false`).
+  The Kokoro model is cached between runs, so the ~300 MB download happens
+  once per OS instead of once per run.
+- **`release`** (tags `v*`, or manually as a rehearsal) — runs the same test
+  matrix as a gate, then publishes to npm with a repository `NPM_TOKEN`
+  secret. Manual runs publish nothing: they stop at `npm publish --dry-run`.
+
+The three-OS install above is what the [Install](#install) section describes;
+if it works there, it installs on the runner's real Windows and macOS too.
 
 ## License
 
