@@ -4,7 +4,10 @@ Everything the probes touch is mocked per OS (linux/darwin/win32): no
 subprocess is really run, no D-Bus session is used to show anything, no
 daemon socket is opened, no audio and — the point of the guard tests —
 notification_request never writes an OS setting (Linux is guidance only).
-The one loose test asserts just what this box reports for Linux.
+The one loose test asserts only that what THIS box reports is coherent with
+this box's own OS — the expected OS is computed from the running platform
+(never hardcoded), so linux, macOS and Windows hosts each check their own
+report and the suite stays host-independent everywhere.
 
 Runs against the voice MCP checkout located by SEBAS_MCP_ROOT (skipped when it
 is not set).
@@ -47,6 +50,34 @@ def _runner(answers):
     def fake(argv):
         return answers.get(argv[0], (None, ""))
     return fake
+
+
+def _expected_os() -> str:
+    """What the report must name on THIS host: the same mapping
+    voice/permissions.py os_name() uses (sys.platform only), computed
+    independently here so a hardcoded platform can never pass again on a
+    macOS or Windows runner."""
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "darwin":
+        return "darwin"
+    if sys.platform in ("win32", "cygwin", "msys"):
+        return "win32"
+    return sys.platform
+
+
+# What each per-OS probe can possibly answer (mirrors the _linux/_darwin/_win
+# report functions in voice/permissions.py). A state outside its OS table
+# means the WRONG probe ran on this box.
+_OS_BACKEND_KEYS = {"linux": ("python_gi_notify", "gdbus"),
+                    "darwin": ("terminal_notifier", "herald"),
+                    "win32": ("powershell", "burnttoast")}
+_OS_PERMISSION_STATES = {"linux": ("not_required", "unknown"),
+                         "darwin": ("granted", "denied", "unknown"),
+                         "win32": ("granted", "denied", "unknown")}
+_OS_DND_STATES = {"linux": ("on", "off", "unknown"),
+                  "darwin": ("unknown",),   # Focus is not script-readable
+                  "win32": ("unknown",)}    # neither is Windows Focus Assist
 
 
 class RegistrationTest(_McpCase):
@@ -195,17 +226,6 @@ class LinuxProbeTest(_McpCase):
         self.assertEqual(permission["state"], "not_required")
         self.assertIn("Settings > Notifications", permission["detail"])
 
-    def test_real_box_report_is_coherent(self):
-        # Loose on purpose: this runs the real read-only probes of this box.
-        report = self.tools.notification_status()
-        self.assertEqual(report["os"], "linux")
-        self.assertEqual(report["status"], "ok")
-        self.assertIn(report["dnd"]["state"], ("on", "off", "unknown"))
-        self.assertIn(report["permission"]["state"],
-                      ("not_required", "unknown"))
-        self.assertIsInstance(report["cards"]["available"], bool)
-        self.assertTrue(report["next_step"])
-
 
 class DarwinProbeTest(_McpCase):
     def test_backend_chain_prefers_terminal_notifier(self):
@@ -306,6 +326,35 @@ class WindowsProbeTest(_McpCase):
                 self.assertTrue(perms._burnttoast_available())
             with mock.patch.dict(os.environ, {"PSModulePath": "/nowhere"}):
                 self.assertFalse(perms._burnttoast_available())
+
+
+class RealBoxReportTest(_McpCase):
+    """The one loose test: the real read-only probes of THIS box, on whatever
+    OS the suite runs. Coherence only — the expected OS comes from the running
+    platform (the rule voice/permissions.py os_name uses), never from a
+    hardcoded string, so linux, macOS and Windows hosts each verify their own
+    report and the suite stays host-independent."""
+
+    def test_real_box_report_is_coherent(self):
+        expected_os = _expected_os()
+        report = self.tools.notification_status()
+        if expected_os not in _OS_BACKEND_KEYS:
+            # The probes cover linux/darwin/win32 only: anywhere else the
+            # report must honestly say 'unknown' with an explanation.
+            self.assertEqual(report["status"], "unknown")
+            self.assertTrue(report["problem"])
+            return
+        self.assertEqual(report["os"], expected_os)
+        self.assertEqual(report["status"], "ok")
+        # The backend dict must belong to the reported OS: the per-OS probe
+        # keys prove WHICH probe ran.
+        for key in _OS_BACKEND_KEYS[expected_os]:
+            self.assertIsInstance(report["backend"][key], bool)
+        self.assertIn(report["dnd"]["state"], _OS_DND_STATES[expected_os])
+        self.assertIn(report["permission"]["state"],
+                      _OS_PERMISSION_STATES[expected_os])
+        self.assertIsInstance(report["cards"]["available"], bool)
+        self.assertTrue(report["next_step"])
 
 
 class CardsProbeTest(_McpCase):

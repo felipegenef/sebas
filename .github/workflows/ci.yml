@@ -94,15 +94,17 @@ jobs:
 
       # The Kokoro weights (~300 MB) are byte-identical on every OS and only
       # change when the kokoro-onnx release does (the model-files-v1.0 tag in
-      # the download URL that setup.sh/setup.ps1 use). Caching <data>/models
-      # means the download happens ONCE per OS — the first run per OS pays
-      # it, every later run restores — instead of ~300 MB per job per run.
+      # the download URL that setup.sh/setup.ps1 use). Caching the RESOLVED
+      # data dir's models (<data home>/sebas/models — the installers write
+      # there, never <data home>/models) means the download happens ONCE per
+      # OS — the first run per OS pays it, every later run restores — instead
+      # of ~300 MB per job per run.
       # The runner.os suffix keeps entries per-OS; cache archives do not
       # reliably restore across OSes.
       - name: Cache the Kokoro model
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/.ci-data/models
+          path: ${{ github.workspace }}/.ci-data/sebas/models
           key: kokoro-models-model-files-v1.0-${{ runner.os }}
 
       - name: Pack the plugin and install the tarball into a temp prefix
@@ -134,11 +136,13 @@ jobs:
           # Before any setup runs: the server must answer {"status":
           # "installing"} clearly instead of crashing — the exact reply the
           # first OpenCode load shows while the plugin installs the runtime
-          # in the background. stdlib-only server, so the system python is
-          # what a fresh machine would use here.
+          # in the background. --voice-dir makes the probe resolve the launch
+          # command exactly like the plugin does (plugin/src/config.ts +
+          # voice/core.py): with no venv yet that falls back to the system
+          # interpreter running the probe — the fresh-machine window.
           VOICE=.ci-prefix/node_modules/@felipegenef/opencode-sebas/mcp/voice
-          python scripts/rpc_probe.py --mode installing --data-home .ci-data -- \
-            python "$VOICE/server.py"
+          python scripts/rpc_probe.py --mode installing --data-home .ci-data \
+            --voice-dir "$VOICE"
 
       - name: Run the installer (setup.sh)
         if: runner.os != 'Windows'
@@ -161,17 +165,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # --voice-dir launches EXACTLY what the plugin resolves at runtime:
+          # the venv interpreter setup just created under the resolved data
+          # dir (<data home>/sebas/venv/Scripts/python.exe on Windows,
+          # <data home>/sebas/venv/bin/python on POSIX) with the installed
+          # server.py. The argv is built in scripts/rpc_probe.py (mirroring
+          # plugin/src/config.ts and voice/core.py), never hand-built here —
+          # a hand-built path once missed the sebas segment and the Windows
+          # probe could not even start the server.
           VOICE=.ci-prefix/node_modules/@felipegenef/opencode-sebas/mcp/voice
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            # Windows has no run.sh: the plugin launches the venv interpreter
-            # directly (plugin/src/config.ts) — do exactly that.
-            python scripts/rpc_probe.py --mode ok --data-home .ci-data -- \
-              .ci-data/venv/Scripts/python.exe "$VOICE/server.py"
-          else
-            # POSIX: `bash run.sh` is what the plugin resolves.
-            python scripts/rpc_probe.py --mode ok --data-home .ci-data -- \
-              bash "$VOICE/run.sh"
-          fi
+          python scripts/rpc_probe.py --mode ok --data-home .ci-data \
+            --voice-dir "$VOICE"
           # The probe asserts: voice_status {"status":"ok"} with the model
           # present, a real .wav produced, and "played": false — play:false is
           # hardcoded in the probe, so nothing ever reaches a speaker (CI
