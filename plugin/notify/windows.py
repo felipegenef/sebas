@@ -18,8 +18,9 @@ WHY this shape (evidence in docs/notify-adapters.md):
     untouched toast from Action Center after AUTO_CLOSE_SECONDS (auto-close).
     One toast per call, never re-shown.
 
-Playback always goes through the voice daemon socket (`<data dir>/engine.sock`,
-see notify/paths.py — the one resolution rule, legacy install included):
+Playback always goes through the voice daemon (`<data dir>/engine.sock` on
+the AF_UNIX flavor, loopback TCP + token otherwise — see notify/transport.py,
+the one endpoint rule, legacy install included):
 one JSON line `{"op":"speak","text":...,"confirmed":true,"play":true}` — the
 daemon is the only process allowed to touch the speaker. The click arrives in
 a fresh process (`windows.py --play-uri ...`, launched by the protocol
@@ -53,7 +54,6 @@ import json
 import os
 import re
 import secrets
-import socket
 import subprocess
 import sys
 import tempfile
@@ -61,18 +61,24 @@ import time
 from pathlib import Path
 from xml.sax.saxutils import escape as _xml_escape
 
-# The data-dir/daemon-socket rule lives in notify/paths.py. This module is
-# also loaded STANDALONE by the unit tests (no package context), hence the
-# fallback import.
+# The data-dir/daemon-endpoint rule lives in notify/paths.py and
+# notify/transport.py. This module is also loaded STANDALONE by the unit
+# tests (no package context), hence the fallback imports.
 try:  # package use (loaded through the card bridge)
-    from .paths import daemon_socket as _shared_daemon_socket
+    from . import transport as _transport
+    from .paths import data_dir as _data_dir
 except ImportError:  # standalone use (tests load this file directly)
     import importlib.util as _ilu
-    _spec = _ilu.spec_from_file_location("_notify_paths",
-                                         str(Path(__file__).with_name("paths.py")))
-    _paths = _ilu.module_from_spec(_spec)
-    _spec.loader.exec_module(_paths)
-    _shared_daemon_socket = _paths.daemon_socket
+
+    def _sibling(name: str):
+        spec = _ilu.spec_from_file_location(
+            f"_notify_{name}", str(Path(__file__).with_name(f"{name}.py")))
+        module = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    _transport = _sibling("transport")
+    _data_dir = _sibling("paths").data_dir
 
 # ----------------------------------------------------------------- contract
 LABELS = {"en-us": "Listen", "pt-br": "Ouvir mensagem"}
@@ -121,8 +127,9 @@ def _title(butler: str, language: str | None) -> str:
 
 
 def _daemon_socket() -> Path:
-    """Voice daemon socket — see notify/paths.py (the one resolution rule)."""
-    return _shared_daemon_socket()
+    """Voice daemon unix endpoint — see notify/transport.py (the one
+    endpoint rule; the flavor choice is transport's decision)."""
+    return _transport.unix_socket(_data_dir()[0])
 
 
 def _daemon_payload(text: str) -> dict:
@@ -131,20 +138,18 @@ def _daemon_payload(text: str) -> dict:
     return {"op": "speak", "text": text, "confirmed": True, "play": True}
 
 
-def _send_play_request(text: str, timeout: float = DAEMON_TIMEOUT) -> dict:
+def _send_play_request(text: str, timeout: float = DAEMON_TIMEOUT,
+                       data: Path | str | None = None) -> dict:
     """Send the playback request to the voice daemon (one JSON line in, one
-    out). Never raises: failures come back as {"status": "error", ...}."""
+    out; the transport is chosen by notify/transport.py). Never raises:
+    failures come back as {"status": "error", ...}."""
     payload = _daemon_payload(text)
-    sock_path = _daemon_socket()
+    data = Path(data) if data is not None else _data_dir()[0]
+    unsupported = _transport.unsupported_payload(status="error")
+    if unsupported is not None:
+        return unsupported
     try:
-        if not hasattr(socket, "AF_UNIX"):
-            return {"status": "error",
-                    "problem": "this Python build has no AF_UNIX socket support",
-                    "next_step": "Use Python 3.9+ on Windows 10 1803+ (AF_UNIX) "
-                                 "or run the voice daemon on the same host."}
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(str(sock_path))
+        with _transport.connect(data, timeout=timeout) as s:
             s.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode())
             buf = b""
             while not buf.endswith(b"\n"):
@@ -155,7 +160,7 @@ def _send_play_request(text: str, timeout: float = DAEMON_TIMEOUT) -> dict:
         reply = json.loads(buf.decode() or "{}")
     except (OSError, ValueError) as exc:
         return {"status": "error",
-                "problem": f"voice daemon unreachable at {sock_path}: {exc!r}",
+                "problem": f"voice daemon unreachable at {_transport.endpoint(data)}: {exc!r}",
                 "next_step": "Start the voice daemon (plugin setup, then the "
                              "daemon) and press the button again; the toast was closed."}
     if reply.get("status") == "ok":
@@ -166,20 +171,21 @@ def _send_play_request(text: str, timeout: float = DAEMON_TIMEOUT) -> dict:
                          or "Check the voice daemon log and press the button again."}
 
 
-def _probe_daemon(timeout: float = 0.5) -> dict:
+def _probe_daemon(timeout: float = 0.5, data: Path | str | None = None) -> dict:
     """Cheap reachability check at show time (play=True only) so the caller
     learns early whether the button will work. Ping only — no synthesis."""
-    sock_path = _daemon_socket()
+    data = Path(data) if data is not None else _data_dir()[0]
+    unsupported = _transport.unsupported_payload(status="error")
+    if unsupported is not None:
+        return unsupported
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(str(sock_path))
+        with _transport.connect(data, timeout=timeout) as s:
             s.sendall(b'{"op":"ping"}\n')
             s.recv(4096)
         return {"status": "ok"}
     except (OSError, ValueError) as exc:
         return {"status": "error",
-                "problem": f"voice daemon unreachable at {sock_path}: {exc!r}",
+                "problem": f"voice daemon unreachable at {_transport.endpoint(data)}: {exc!r}",
                 "next_step": "Start the voice daemon before pressing the "
                              "button, or the click will only close the toast."}
 

@@ -188,7 +188,8 @@ def warmup() -> dict:
 def get_user_name() -> dict:
     """Reads the identity configuration: butler name, spoken language, user
     names, related people and the form of address. Stored here, never in the
-    shared instructions."""
+    shared instructions. No identity saved = first interaction: the butler
+    asks once (name, how to be called, language) and never assumes."""
     users = core.load_users()
     form = (users.get("form_of_address") or "").strip() or None
     greeting = (core.user_greeting()
@@ -204,9 +205,15 @@ def get_user_name() -> dict:
             "next_step": ("Address the user exactly as 'form_of_address' "
                           "says — used verbatim and always cordial (a "
                           "treatment like 'senhor', 'doutor', 'chefe' or the "
-                          "complete 'senhor Alex'). When it is unset, use "
-                          "the language default greeting. Save or change it "
-                          "with set_user_name(form_of_address=...). People "
+                          "complete 'senhor Alex'). When it is unset, greet "
+                          "NEUTRALLY — the plain name, never a gendered "
+                          "treatment — and, on first contact, ask ONCE how "
+                          "they like to be called (first-interaction "
+                          "rubric): name, form of address and language "
+                          "(English or Portuguese), then save with "
+                          "set_user_name(form_of_address=...) and "
+                          "set_language(...) so the question is never "
+                          "repeated. Never assume gender from a name. People "
                           "in 'people' are family or known contacts — "
                           "recognize them by name when mentioned. If no name "
                           "is set, ask the user and register with "
@@ -221,9 +228,13 @@ def set_user_name(name: str, main: bool = True,
     form_of_address is the vocative used VERBATIM by the persona and the
     spoken greeting — a treatment ('senhor', 'doutor', 'chefe'…) or the
     complete form ('senhor Alex'). None keeps the current value; a
-    non-empty string saves it (stripped); '' clears it back to the language
-    default. One form of address for the main user; per-user mapping is
-    future work."""
+    non-empty string saves it (stripped); '' clears it back to the neutral
+    default (the plain first name). One form of address for the main user;
+    per-user mapping is future work.
+
+    Never assume a treatment from the name: when none is saved, ask the
+    user once how they like to be called (first-interaction rubric) and
+    save what they answer."""
     name = (name or "").strip()
     if not name:
         return {"status": "invalid_name", "problem": "empty name",
@@ -239,7 +250,10 @@ def set_user_name(name: str, main: bool = True,
     return {"status": "ok", **users,
             "next_step": ("Address the user exactly as 'form_of_address' "
                           "says (verbatim, always cordial); with none saved, "
-                          "use the language default greeting.")}
+                          "greet NEUTRALLY — the plain name, never a gendered "
+                          "treatment — and ask once how they like to be "
+                          "called (first-interaction rubric), then save it "
+                          "here.")}
 
 
 def set_butler_name(name: str) -> dict:
@@ -351,7 +365,10 @@ SCHEMA = [
                      "greeting sounds like now). Address the user exactly as "
                      "'form_of_address' says — verbatim, always cordial; the "
                      "names are stored by the server, not in the shared "
-                     "instructions."),
+                     "instructions. No identity saved = first interaction: "
+                     "ask once — name, how they like to be called, language — "
+                     "and until it is saved greet NEUTRALLY (never a gendered "
+                     "treatment, never assume one from the name)."),
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "set_user_name",
      "description": ("Registers a user name in the server configuration and, "
@@ -359,16 +376,19 @@ SCHEMA = [
                      "('form_of_address': free text used VERBATIM as the "
                      "vocative — 'senhor', 'senhora', 'doutor', 'chefe'… or "
                      "the complete 'senhor Alex'; omit to keep the current "
-                     "value, pass '' to clear it back to the language "
-                     "default)."),
+                     "value, pass '' to clear it back to the neutral "
+                     "default). Ask the user how they like to be called "
+                     "before setting it — never assume a treatment from the "
+                     "name (first-interaction rubric)."),
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string", "description": "Full name of the user, e.g. 'Alex Doe'."},
          "main": {"type": "boolean", "description": "Default true: make it the main user."},
          "form_of_address": {"type": "string", "description": ("How the user likes to be "
                       "called, used verbatim as the vocative: a treatment ('senhor', "
                       "'doutor', 'chefe'…) or the complete form ('senhor Alex'). "
-                      "Omit to keep the current value; pass '' to clear it (the "
-                      "language default greeting returns).")},
+                      "Ask the user first — never assume one from the name. Omit to "
+                      "keep the current value; pass '' to clear it (the neutral "
+                      "default greeting returns: the plain first name).")},
      }, "required": ["name"]}},
     {"name": "set_butler_name",
      "description": "Renames the butler persona (default: Sebas).",

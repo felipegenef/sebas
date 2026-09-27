@@ -53,7 +53,12 @@ plugin/
 Both moving parts ship **inside** this package, so one install brings
 everything. They are located through a documented precedence — **plugin option
 → environment variable → relative layout** — and nothing is hardcoded to one
-machine:
+machine. Between them, the daemon's transport is chosen at runtime by
+`mcp/voice/voice/transport.py` (mirrored byte-for-byte in
+`notify/transport.py`): an AF_UNIX socket at `<data>/engine.sock` where the
+Python build has AF_UNIX, otherwise a loopback TCP socket on `127.0.0.1`
+guarded by a random token (`<data>/engine.port` + `<data>/engine.token`, both
+0600) — so Windows builds without AF_UNIX reach the daemon all the same:
 
 | Knob | Where | Default | Meaning |
 |---|---|---|---|
@@ -102,9 +107,15 @@ play). The plugin stores them under two `storage` keys: `identity` and `voice`.
 
 The **form of address** is how the user likes to be called — free text used
 **verbatim** as the vocative: a treatment ("sir", "doctor", "boss") or the
-complete form ("Mr. Alex"). Unset or empty falls back to the language default
-greeting. In the merge it runs on key presence: an absent key falls through to
-the lower layer, while a stored `""` is an explicit clear and wins.
+complete form ("Mr. Alex"). Unset or empty falls back to the neutral greeting
+(the plain first name — never gendered). In the merge it runs on key presence:
+an absent key falls through to the lower layer, while a stored `""` is an
+explicit clear and wins.
+
+**First run:** with no identity saved, the butler asks once — name, how to be
+called, and language (English / Portuguese) — saves the answers, and never
+asks again. Until then the address is cordial but neutral: no gendered
+treatment, and gender is never guessed from a name.
 
 Load order (each layer only fills what the previous one left unset):
 

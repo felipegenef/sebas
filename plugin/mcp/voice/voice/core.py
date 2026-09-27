@@ -12,7 +12,12 @@ Identity is configuration, never hardcoded in shared instructions:
                                    VERBATIM as the vocative ("senhor",
                                    "doutor", "chefe"… or the complete
                                    "senhor Alex"); one for the main user
-                                   (per-user mapping is future work)
+                                   (per-user mapping is future work). When
+                                   it is unset the greeting is NEUTRAL — the
+                                   plain first name in EVERY language, never
+                                   a gendered treatment: on first contact the
+                                   butler ASKS how the user likes to be
+                                   called instead of assuming one.
 
 Files kept outside git, all under the resolved data dir (see
 resolve_data_dir below; default ~/.local/share/sebas):
@@ -154,8 +159,10 @@ _FALLBACK_VOICES = {
     "pt-br": ["pm_santa", "pm_alex", "pf_dora"],
 }
 # Default spoken address when no form_of_address is saved ('{first}' = first
-# word of the main user's name).
-GREETING = {"en-us": "{first}", "pt-br": "Senhor {first}"}
+# word of the main user's name): the plain first name in EVERY language —
+# neutral, never a gendered treatment. The treatment comes ONLY from the
+# saved form_of_address; nothing is ever assumed from the name.
+GREETING = {"en-us": "{first}", "pt-br": "{first}"}
 
 DEFAULT_CONFIG = {
     "voice": None,          # None = default voice for the configured language
@@ -260,10 +267,10 @@ def set_butler_name(name: str) -> str:
 
 def user_greeting() -> str:
     """Polite spoken address: the saved form_of_address VERBATIM when set
-    ('senhor Alex', 'chefe', 'doutor'…), else the language default
-    ('Senhor Alex' pt-br / 'Alex' en-us); '' with neither. An empty or
+    ('senhor Alex', 'chefe', 'doutor'…), else the neutral default (the plain
+    first name in every language: 'Alex'); '' with neither. An empty or
     whitespace-only form_of_address behaves as unset: clearing it restores
-    the language default."""
+    the neutral default."""
     users = load_users()
     form = (users.get("form_of_address") or "").strip()
     if form:

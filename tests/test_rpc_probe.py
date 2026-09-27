@@ -10,7 +10,9 @@ Two levels of proof, no audio and no 300 MB model anywhere:
     in CI, where the Kokoro weights are cached. The suite says so rather than
     pretending otherwise.
 Safety invariants checked here too: the speak request always carries
-play:false, and the probe refuses to run beside a live daemon socket.
+play:false, and the probe refuses to run beside a live daemon endpoint
+(engine.sock or engine.port — the names mirror voice/transport.py and the
+parity is pinned below).
 The launch-command construction is machine-checked as well (mocked Popen,
 exact argv): the probe must resolve <data>/sebas/venv/Scripts/python.exe on
 Windows and <data>/sebas/venv/bin/python on POSIX — the same interpreter
@@ -168,6 +170,36 @@ class ProbeAgainstStubServerTest(unittest.TestCase):
         done = self.run_probe(data_home=data)
         self.assertEqual(done.returncode, 2)
         self.assertIn("refusing to run", done.stderr)
+
+    def test_refuses_to_probe_beside_a_live_tcp_daemon_endpoint(self):
+        """The loopback TCP fallback publishes engine.port — a live daemon
+        there must stop the probe just as engine.sock does."""
+        data = self.tmp / "data"
+        (data / "sebas").mkdir(parents=True)
+        (data / "sebas" / "engine.port").write_text("12345")
+        done = self.run_probe(data_home=data)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("refusing to run", done.stderr)
+        self.assertIn("engine.port", done.stderr)
+
+
+class EndpointNamesMirrorTheTransportTest(unittest.TestCase):
+    """rpc_probe is stdlib-only (it must never import the plugin), so it
+    mirrors the daemon endpoint file names by hand — like it mirrors
+    venv_python and the data-dir rule. The parity is machine-checked here
+    against voice/transport.py so the two can never drift."""
+
+    def test_refusal_names_match_the_transport_module(self):
+        root = mcp_root()
+        if root is None:
+            self.skipTest("set SEBAS_MCP_ROOT to the voice MCP checkout")
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from voice import transport
+        source = PROBE.read_text(encoding="utf-8")
+        for name in (transport.UNIX_SOCK_NAME, transport.PORT_FILE_NAME):
+            self.assertIn(f'"{name}"', source,
+                          f"rpc_probe must refuse on a live {name}")
 
 
 class CommandConstructionTest(unittest.TestCase):

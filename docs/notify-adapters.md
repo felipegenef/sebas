@@ -22,7 +22,11 @@ to the voice daemon socket:
 
 Socket: `$XDG_DATA_HOME/sebas/engine.sock`, default `~/.local/share/sebas/engine.sock`
 — resolved at runtime, never hardcoded. (Pre-1.0 installs used a legacy data
-directory; it is auto-detected and reused.) If the daemon is unreachable the click
+directory; it is auto-detected and reused.) Which transport the daemon speaks
+is `notify/transport.py`'s decision: that AF_UNIX socket where the Python
+build has AF_UNIX, otherwise a loopback TCP socket on `127.0.0.1` with a
+random first-line token (`engine.port` + `engine.token`, both 0600). If the
+daemon is unreachable the click
 path closes the card and returns `{"status": "error", "problem": ..., "next_step": ...}`.
 
 ---

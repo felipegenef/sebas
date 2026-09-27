@@ -3,13 +3,16 @@
 Why: several OpenCode sessions each spawn their own MCP server instance, and
 every instance loading the TTS model wastes RAM and can contend for the CPU.
 This daemon owns the audio: the ONLY process allowed to load models and to
-touch the speaker. MCP instances send requests over a Unix socket (see
-engine.py). On Windows the same transport is used — Python 3.9+ on Windows
-10 1803+ speaks AF_UNIX and there is deliberately no second transport.
-Windows limits that socket path to about 108 characters, so keep the data
-directory short: when the user profile path is very long, point
-XDG_DATA_HOME at a short directory BEFORE running the setup, or
-`<data>/engine.sock` exceeds the limit and the daemon cannot bind.
+touch the speaker. MCP instances send requests over a private local socket
+(see engine.py) — the transport is chosen by voice/transport.py: an AF_UNIX
+socket at `<data>/engine.sock` where the Python build has AF_UNIX (every
+POSIX host), and a loopback TCP socket on 127.0.0.1 with a random first-line
+token (`<data>/engine.port` + `<data>/engine.token`, both 0600) where it does
+not (Windows CI Python and other stripped builds). Windows limits the
+AF_UNIX socket path to about 108 characters, so keep the data directory
+short there: when the user profile path is very long, point XDG_DATA_HOME at
+a short directory BEFORE running the setup, or `<data>/engine.sock` exceeds
+the limit and the daemon cannot bind (the TCP fallback has no such limit).
 
 Queue semantics — two voices NEVER overlap:
   * One turn at a time: generation AND playback happen under the same turn,
@@ -56,9 +59,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from voice import core  # noqa: E402
+from voice import core, transport  # noqa: E402
 
-SOCK = core.DATA / "engine.sock"
 LOCK = core.DATA / "engine.lock"
 LOG = core.DATA / "daemon.log"
 IDLE_UNLOAD = 900          # waited-seconds threshold (no idle timer yet)
@@ -84,29 +86,20 @@ def _log(msg: str) -> None:
 
 
 # --------------------------------------------------------------- client side
-def _af_unix_missing() -> dict | None:
-    """Error payload when this Python build has no AF_UNIX sockets, None
-    otherwise. Same guard and wording as the notify adapters (macos.py /
-    windows.py): a clear dict with a next_step beats a traceback. Python
-    3.9+ on Windows 10 1803+ does have AF_UNIX; older builds cannot run the
-    daemon at all."""
-    if hasattr(socket, "AF_UNIX"):
-        return None
-    return {"status": "daemon_error",
-            "problem": "this Python build has no AF_UNIX socket support",
-            "next_step": "Use Python 3.9+ on Windows 10 1803+ (AF_UNIX) "
-                         "or run the voice daemon on the same host."}
+def _transport_unsupported() -> dict | None:
+    """Error payload when NEITHER daemon transport works on this Python
+    build (no AF_UNIX and no TCP either), None otherwise. With the loopback
+    TCP fallback (voice/transport.py) a build without AF_UNIX reaches the
+    daemon normally and never sees this — it is the last-stop guard shared
+    with the notify adapters."""
+    return transport.unsupported_payload()
 
 
 def _alive() -> bool:
-    if _af_unix_missing() is not None:
-        return False
-    if not SOCK.exists():
+    if _transport_unsupported() is not None:
         return False
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(2)
-            s.connect(str(SOCK))
+        with transport.connect(core.DATA, timeout=2) as s:
             s.sendall(b'{"op":"ping"}\n')
             return bool(s.recv(4096))
     except OSError:
@@ -115,7 +108,7 @@ def _alive() -> bool:
 
 def ensure_running() -> None:
     """Start the daemon if it is not up. Safe against concurrent callers."""
-    if _af_unix_missing() is not None:
+    if _transport_unsupported() is not None:
         return                                # nothing could ever reach it
     if _alive():
         return
@@ -163,15 +156,13 @@ def ensure_running() -> None:
 
 
 def request(payload: dict, timeout: float = 900) -> dict:
-    """Send one request to the daemon; returns its JSON reply. Without
-    AF_UNIX support the reply is the clear error payload (never a crash)."""
-    missing = _af_unix_missing()
-    if missing is not None:
-        return missing
+    """Send one request to the daemon; returns its JSON reply. When NEITHER
+    transport works the reply is the clear error payload (never a crash)."""
+    unsupported = _transport_unsupported()
+    if unsupported is not None:
+        return unsupported
     ensure_running()
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(timeout)
-        s.connect(str(SOCK))
+    with transport.connect(core.DATA, timeout=timeout) as s:
         s.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode())
         buf = b""
         while not buf.endswith(b"\n"):
@@ -313,7 +304,7 @@ def _handle(op: str, args: dict, busy: bool = False) -> dict:
     if op == "ping":
         return {"status": "ok"}
     if op == "status":
-        return {"status": "ok", **core.status(), "socket": str(SOCK),
+        return {"status": "ok", **core.status(), "socket": transport.endpoint(core.DATA),
                 "queue_waiting": _WAITING["n"]}
     if op == "unload":
         core.unload_all()
@@ -446,10 +437,15 @@ def _serve_voice(req: dict) -> dict:
     return reply
 
 
-def _serve_conn(conn: socket.socket) -> None:
+def _serve_conn(conn: socket.socket, listener: "transport.Listener") -> None:
     conn.settimeout(900)
     try:
-        buf = b""
+        refused, buf = transport.authorize(conn, listener)
+        if refused is not None:
+            # TCP flavor only: wrong/missing first-line token. House payload,
+            # then close — the request itself is never parsed or served.
+            conn.sendall((json.dumps(refused, ensure_ascii=False) + "\n").encode())
+            return
         while not buf.endswith(b"\n"):
             chunk = conn.recv(65536)
             if not chunk:
@@ -488,22 +484,20 @@ def _serve_conn(conn: socket.socket) -> None:
 
 
 def serve() -> None:
-    missing = _af_unix_missing()
-    if missing is not None:
-        _log(f"refusing to start: {missing['problem']}")
-        raise RuntimeError(f"{missing['problem']}. {missing['next_step']}")
+    unsupported = _transport_unsupported()
+    if unsupported is not None:
+        _log(f"refusing to start: {unsupported['problem']}")
+        raise RuntimeError(f"{unsupported['problem']}. {unsupported['next_step']}")
     core.DATA.mkdir(parents=True, exist_ok=True)
-    try:
-        SOCK.unlink()
-    except OSError:
-        pass
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
-        srv.bind(str(SOCK))
-        srv.listen(16)
-        _log(f"daemon up (pid {os.getpid()})")
-        while True:
-            conn, _ = srv.accept()
-            threading.Thread(target=_serve_conn, args=(conn,), daemon=True).start()
+    # AF_UNIX at <data>/engine.sock where the build has it, else the
+    # loopback TCP + token fallback (engine.port / engine.token, 0600).
+    listener = transport.bind_listener(core.DATA)
+    _log(f"daemon up (pid {os.getpid()}, {listener.kind} transport at "
+         f"{transport.endpoint(core.DATA, listener.kind)})")
+    while True:
+        conn, _ = listener.sock.accept()
+        threading.Thread(target=_serve_conn, args=(conn, listener),
+                         daemon=True).start()
 
 
 if __name__ == "__main__":
@@ -511,9 +505,6 @@ if __name__ == "__main__":
         try:
             serve()
         finally:
-            try:
-                SOCK.unlink()
-            except OSError:
-                pass
+            transport.remove_endpoints(core.DATA)
     else:
         print(json.dumps(request({"op": "status"}), ensure_ascii=False, indent=2))

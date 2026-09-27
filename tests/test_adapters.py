@@ -15,6 +15,7 @@ import json
 import os
 import re
 import socket
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+
+from _support import af_unix_removed, serve_one  # noqa: E402
 
 
 def _load(name: str, relpath: str):
@@ -109,60 +113,84 @@ class ContractTests(unittest.TestCase):
 
 
 class DaemonSendTests(unittest.TestCase):
-    """One JSON line per request; failures are payloads, never exceptions."""
+    """One JSON line per request; failures are payloads, never exceptions.
 
-    def _fake_socket(self, reply: dict):
-        sent = {}
+    The fake daemon is a REAL listener bound through the same transport
+    abstraction the adapters use (notify/transport.py), so these tests prove
+    the wire over the AF_UNIX flavor AND over the loopback TCP + token
+    fallback — the two flavors the CI Windows Python exercises. The
+    'unreachable' semantics are asserted per transport."""
 
-        class FakeSocket:
-            def __init__(self, *a, **k):
-                pass
+    def _round_trip(self, module, reply: dict, text: str):
+        """One send against a one-shot fake daemon; returns (result, received)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "sebas"
+            received, thread = serve_one(data, reply, transport=module._transport)
+            result = module._send_play_request(text, timeout=5, data=data)
+            thread.join(5)
+        return result, received
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def settimeout(self, t):
-                sent["timeout"] = t
-
-            def connect(self, path):
-                sent["path"] = path
-
-            def sendall(self, data):
-                sent["data"] = data
-
-            def recv(self, n):
-                return (json.dumps(reply) + "\n").encode()
-
-        return FakeSocket, sent
-
-    def test_send_ok(self):
-        fake, sent = self._fake_socket({"status": "ok", "played": True})
-        with mock.patch.object(socket, "socket", fake):
-            result = macos._send_play_request("mensagem completa", timeout=1.0)
-        self.assertEqual(result["status"], "ok")
-        line = sent["data"].decode()
-        self.assertTrue(line.endswith("\n"))
-        self.assertEqual(json.loads(line),
-                         {"op": "speak", "text": "mensagem completa",
-                          "confirmed": True, "play": True})
-
-    def test_send_unreachable_is_error_payload(self):
-        def boom(*a, **k):
-            raise OSError("no such file")
-
-        with mock.patch.object(socket, "socket", boom):
-            result = windows._send_play_request("hi", timeout=0.1)
+    def _assert_unreachable(self, module):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "sebas"          # nothing is listening there
+            result = module._send_play_request("hi", timeout=0.5, data=data)
         self.assertEqual(result["status"], "error")
         self.assertIn("unreachable", result["problem"])
         self.assertTrue(result["next_step"])
 
+    def test_send_ok(self):
+        for module in (macos, windows):
+            with self.subTest(module=module.__name__):
+                result, received = self._round_trip(
+                    module, {"status": "ok", "played": True}, "mensagem completa")
+                self.assertEqual(result["status"], "ok")
+                self.assertTrue(result["played"])
+                line = received["raw"].decode()
+                self.assertTrue(line.endswith("\n"))
+                self.assertEqual(json.loads(line),
+                                 {"op": "speak", "text": "mensagem completa",
+                                  "confirmed": True, "play": True})
+
+    def test_send_ok_without_af_unix(self):
+        """The CI Windows Python: no AF_UNIX, the loopback TCP + token
+        transport carries the same request and the same reply."""
+        with af_unix_removed():
+            for module in (macos, windows):
+                with self.subTest(module=module.__name__):
+                    result, received = self._round_trip(
+                        module, {"status": "ok", "played": True}, "mensagem completa")
+                    self.assertEqual(result["status"], "ok")
+                    self.assertEqual(json.loads(received["raw"]),
+                                     {"op": "speak", "text": "mensagem completa",
+                                      "confirmed": True, "play": True})
+
+    def test_send_unreachable_is_error_payload(self):
+        for module in (macos, windows):
+            with self.subTest(module=module.__name__):
+                self._assert_unreachable(module)
+
+    def test_send_unreachable_is_error_payload_without_af_unix(self):
+        with af_unix_removed():
+            for module in (macos, windows):
+                with self.subTest(module=module.__name__):
+                    self._assert_unreachable(module)
+
     def test_send_non_ok_reply_is_error_payload(self):
-        fake, _ = self._fake_socket({"status": "generation_error", "problem": "x"})
-        with mock.patch.object(socket, "socket", fake):
-            result = macos._send_play_request("hi", timeout=1.0)
+        for module in (macos, windows):
+            with self.subTest(module=module.__name__):
+                result, _ = self._round_trip(
+                    module, {"status": "generation_error", "problem": "x"}, "hi")
+                self.assertEqual(result["status"], "error")
+                self.assertTrue(result["next_step"])
+
+    def test_send_socket_failure_is_an_error_payload_not_an_exception(self):
+        def boom(*a, **k):
+            raise OSError("socket layer exploded")
+
+        with mock.patch.object(socket, "socket", boom):
+            for module in (macos, windows):
+                with self.subTest(module=module.__name__):
+                    result = module._send_play_request("hi", timeout=0.1)
         self.assertEqual(result["status"], "error")
         self.assertTrue(result["next_step"])
 

@@ -3,7 +3,8 @@
 Why: the butler addresses the user exactly as the saved `form_of_address`
 says ("senhor", "senhora", "doutor", "chefe"… or the complete vocative like
 "senhor Alex") and the spoken greeting uses the same string VERBATIM;
-empty/unset falls back to the language default and '' clears back to it.
+empty/unset falls back to the NEUTRAL default (the plain first name in every
+language — never a gendered treatment) and '' clears back to it.
 Every test runs against a TEMPORARY users.json/config.json — the real
 configuration is never read or written, the daemon socket is never touched,
 and no audio is ever played.
@@ -54,7 +55,8 @@ class _TreatmentCase(unittest.TestCase):
 
 
 class GreetingTest(_TreatmentCase):
-    """core.user_greeting(): form_of_address verbatim, else language default."""
+    """core.user_greeting(): form_of_address verbatim, else the neutral
+    default (the plain first name)."""
 
     def test_form_of_address_is_used_verbatim(self):
         self.tools.set_user_name("Alex Doe", form_of_address="senhor Alex")
@@ -72,24 +74,37 @@ class GreetingTest(_TreatmentCase):
         self.core.save_users(users)
         self.assertEqual(self.core.user_greeting(), "chefe")
 
-    def test_default_greeting_per_language_when_unset(self):
+    def test_default_greeting_is_neutral_per_language(self):
         self.tools.set_user_name("Alex Doe")
         self.set_language("pt-br")
-        self.assertEqual(self.core.user_greeting(), "Senhor Alex")
+        self.assertEqual(self.core.user_greeting(), "Alex")
         self.set_language("en-us")
         self.assertEqual(self.core.user_greeting(), "Alex")
 
-    def test_cleared_form_restores_the_language_default(self):
+    def test_default_greeting_never_guesses_gender_from_the_name(self):
+        # The fresh-install bug: pt-br used to prefix "Senhor " to ANY name.
+        self.set_language("pt-br")
+        self.tools.set_user_name("Natália")
+        self.assertEqual(self.core.user_greeting(), "Natália")
+        self.set_language("en-us")
+        self.assertEqual(self.core.user_greeting(), "Natália")
+
+    def test_no_language_carries_a_gendered_default(self):
+        for lang, template in self.core.GREETING.items():
+            self.assertEqual(template, "{first}", lang)
+            self.assertNotIn("senhor", template.lower())
+
+    def test_cleared_form_restores_the_neutral_default(self):
         self.set_language("pt-br")
         self.tools.set_user_name("Alex Doe", form_of_address="chefe")
         self.assertEqual(self.core.user_greeting(), "chefe")
         self.tools.set_user_name("Alex Doe", form_of_address="")
-        self.assertEqual(self.core.user_greeting(), "Senhor Alex")
+        self.assertEqual(self.core.user_greeting(), "Alex")
 
     def test_whitespace_only_form_behaves_as_unset(self):
         self.set_language("pt-br")
         self.tools.set_user_name("Alex Doe", form_of_address="   ")
-        self.assertEqual(self.core.user_greeting(), "Senhor Alex")
+        self.assertEqual(self.core.user_greeting(), "Alex")
 
     def test_no_name_and_no_form_gives_empty_greeting(self):
         self.assertEqual(self.core.user_greeting(), "")
@@ -120,12 +135,12 @@ class GetUserNamePayloadTest(_TreatmentCase):
         self.set_language("pt-br")
         self.tools.set_user_name("Alex Doe")
         self.assertEqual(self.tools.get_user_name()["greeting_example"],
-                         "Senhor Alex")
+                         "Alex")
 
     def test_greeting_example_when_nothing_is_set(self):
         self.set_language("pt-br")
         self.assertEqual(self.tools.get_user_name()["greeting_example"],
-                         "Senhor <first name>")
+                         "<first name>")
         self.set_language("en-us")
         self.assertEqual(self.tools.get_user_name()["greeting_example"],
                          "<first name>")
@@ -137,6 +152,12 @@ class GetUserNamePayloadTest(_TreatmentCase):
                     "next_step"):
             self.assertIn(key, payload)
         self.assertTrue(payload["next_step"])
+
+    def test_next_step_says_to_ask_when_no_identity_is_saved(self):
+        step = self.tools.get_user_name()["next_step"].lower()
+        self.assertIn("ask once", step)          # never repeat the question
+        self.assertIn("never assume", step)      # never infer gender/name
+        self.assertIn("neutral", step)           # neutral until it is known
 
 
 class SetUserNameTest(_TreatmentCase):
@@ -163,7 +184,7 @@ class SetUserNameTest(_TreatmentCase):
         payload = self.tools.set_user_name("Alex Doe", form_of_address="")
         self.assertEqual(payload["status"], "ok")
         self.assertFalse(self.core.load_users()["form_of_address"])
-        self.assertEqual(self.core.user_greeting(), "Senhor Alex")
+        self.assertEqual(self.core.user_greeting(), "Alex")
 
     def test_whitespace_only_string_clears_too(self):
         self.tools.set_user_name("Alex Doe", form_of_address="chefe")
@@ -210,6 +231,13 @@ class SchemaTest(_TreatmentCase):
         entry = self._entry("get_user_name")
         self.assertIn("form_of_address", entry["description"])
         self.assertIn("greeting_example", entry["description"])
+
+    def test_schema_says_to_ask_and_never_assume(self):
+        for name in ("get_user_name", "set_user_name"):
+            desc = self._entry(name)["description"].lower()
+            self.assertIn("ask", desc, name)
+            self.assertIn("never assume", desc, name)
+            self.assertIn("neutral", desc, name)
 
 
 if __name__ == "__main__":

@@ -31,10 +31,13 @@ server (the stub the probe's own tests drive).
 Safety rules this helper enforces on itself:
   * NEVER plays audio. `play: false` is hardcoded in the speak request and is
     not configurable — the probe only ever proves synthesis (a .wav file).
-  * NEVER touches a live daemon socket. The child runs with XDG_DATA_HOME /
+  * NEVER touches a live daemon. The child runs with XDG_DATA_HOME /
     HOME / USERPROFILE pointed at the scratch data dir it is given, and the
-    probe refuses to run at all when that dir already contains an
-    engine.sock (a daemon is listening there).
+    probe refuses to run at all when that dir already contains a daemon
+    endpoint — `engine.sock` (the AF_UNIX flavor) or `engine.port` (the
+    loopback TCP + token flavor). The two file names mirror
+    voice/transport.py (tests pin the parity), like the rest of the rules
+    this file mirrors.
   * Only the process it spawned is ever terminated (on read timeout).
 
 Usage:
@@ -198,13 +201,15 @@ def main() -> int:
 
     data_home = Path(args.data_home).expanduser().resolve()
     data = _data_dir(data_home)
-    if (data / "engine.sock").exists():
-        # The one place this helper could hurt a real install: talking to (or
-        # spawning next to) the user's live daemon. Refuse outright.
-        print(f"rpc_probe: refusing to run: {data / 'engine.sock'} exists "
-              "(a live daemon socket). Point --data-home at a scratch dir.",
-              file=sys.stderr)
-        return 2
+    for endpoint in ("engine.sock", "engine.port"):
+        if (data / endpoint).exists():
+            # The one place this helper could hurt a real install: talking to
+            # (or spawning next to) the user's live daemon. Refuse outright —
+            # either endpoint file means a daemon is (or was) listening there.
+            print(f"rpc_probe: refusing to run: {data / endpoint} exists "
+                  "(a live daemon endpoint). Point --data-home at a scratch dir.",
+                  file=sys.stderr)
+            return 2
 
     if args.voice_dir:
         voice_dir = Path(args.voice_dir).expanduser().resolve()

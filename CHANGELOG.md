@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.0.2 — 2026-09-27
+
+**The butler asks who you are instead of assuming.** On a fresh install the
+spoken greeting used to be gendered by default ("senhor" in Brazilian
+Portuguese) — a wrong guess the moment anyone else used the machine.
+
+- **First-interaction rubric.** When no identity is saved, the butler asks
+  **once** — your name, how you like to be called (senhor, senhora, doctor,
+  boss, or any form you choose) and which language to speak (English /
+  Portuguese) — saves the answers (`set_user_name` / `set_language`) and never
+  asks again.
+- **Neutral until it knows.** Until those answers are saved the address stays
+  cordial but neutral: the plain name or a neutral greeting, no gendered
+  treatment in any language. Gender is never guessed from a name.
+- **Neutral default greeting.** Without a saved form of address the spoken
+  greeting is now the plain first name in every language (`{first}`); the
+  treatment comes only from the saved `form_of_address`. Clearing the form
+  restores that neutral default.
+- The persona text, the `get_user_name` / `set_user_name` tool descriptions
+  and their `next_step` strings all carry the same guidance: missing identity
+  → ask, never assume.
+
+**Windows voice transport: the daemon is reachable without AF_UNIX (loopback
+TCP + token).** The 3-OS CI caught a real product bug: some Windows Python
+builds (the GitHub `windows-latest` runner among them) ship without AF_UNIX
+sockets, and the voice daemon was unreachable there at all — `speak` answered
+`daemon_error`, and every Windows user without AF_UNIX would have lost the
+one-voice-at-a-time daemon (the thing that guarantees two voices never
+overlap).
+
+- **One transport module, two flavors.** `voice/transport.py` (mirrored
+  byte-for-byte in `notify/transport.py`) is now the only place that knows how
+  clients reach the daemon: the AF_UNIX socket at `<data>/engine.sock` where
+  the Python build has AF_UNIX — POSIX behavior unchanged, byte for byte —
+  and, where it does not, a stream socket bound to `127.0.0.1` ONLY (never
+  `0.0.0.0`) on an ephemeral port published in `<data>/engine.port`.
+- **Token auth with the unix socket's parity.** A TCP port carries no file
+  permissions, so the listening side writes a random token to
+  `<data>/engine.token` and the client sends it as the FIRST line of every
+  connection; a mismatch gets the usual house payload and is never served.
+  Both files are written 0600 — same threat model as the unix socket: other
+  local users on the same machine.
+- **The "this Python build has no AF_UNIX socket support" error now appears
+  only when neither transport can work** — with the TCP fallback it is not
+  reachable on the CI Windows runner, and the daemon's R1 (one voice at a
+  time) holds over the TCP transport exactly as over the unix socket.
+- **Every caller goes through the one module**: the daemon (client and
+  server), the notification-card click handlers on all three platforms and
+  the CI probe (which refuses to run beside either live endpoint —
+  `engine.sock` or `engine.port` — and exercises the TCP path on Windows
+  automatically).
+- **Tests pin it on all three CI legs**: flavor selection with AF_UNIX
+  monkeypatched away, loopback-only bind, `engine.port`/`engine.token` modes
+  0600, token rejection, the unix wire with no added handshake byte, adapter
+  round trips over both flavors, and two concurrent requests playing one at a
+  time through the TCP transport.
+
 ## 1.0.1 — 2026-09-27
 
 **Automatic first-run voice setup on Linux, macOS and Windows: no manual step,

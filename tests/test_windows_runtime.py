@@ -8,8 +8,9 @@ mocked (os.name / sys.platform) and every player is a stand-in — no test ever
 plays audio, opens a speaker or starts a real shell. The POSIX players are
 pinned too, so a Windows edit can never break Linux playback, and the macOS
 player (afplay, built into macOS) is pinned the same way: first on darwin,
-never on Linux. The AF_UNIX guard is exercised the same way the notify
-adapters guard it.
+never on Linux. The daemon transport guard is exercised the same way the
+notify adapters guard it: the "no AF_UNIX" payload only when NEITHER
+transport works, the loopback TCP + token fallback where AF_UNIX is missing.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin"))
 
-from _support import mcp_root  # noqa: E402
+from _support import af_unix_removed, attr_removed, mcp_root, serve_one  # noqa: E402
 
 
 def _voice_modules():
@@ -241,45 +242,63 @@ class PlayFileMacOSTest(unittest.TestCase):
         ])
 
 
-class AfUnixGuardTest(unittest.TestCase):
-    """Without AF_UNIX the daemon answers with a clear payload (the same
-    guard the notify adapters use) and never spawns a doomed daemon."""
+class TransportGuardTest(unittest.TestCase):
+    """The daemon's last-stop guard: the "no AF_UNIX" payload appears ONLY
+    when NEITHER transport works. A build WITHOUT AF_UNIX is not a failure
+    case — it speaks the loopback TCP + token fallback (voice/transport.py)
+    and reaches the daemon normally. This pins the CI Windows bug: there
+    `hasattr(socket, "AF_UNIX")` is False and the daemon must still work."""
 
     def setUp(self):
         self.core, self.daemon = _voice_modules()
         if self.daemon is None:
             self.skipTest("set SEBAS_MCP_ROOT to the voice MCP checkout")
 
-    def _without_af_unix(self):
-        saved = socket.AF_UNIX
-        del socket.AF_UNIX
-        self.addCleanup(setattr, socket, "AF_UNIX", saved)
+    def test_without_af_unix_the_guard_stays_silent(self):
+        with af_unix_removed():
+            self.assertIsNone(self.daemon._transport_unsupported())
+            self.assertEqual(self.daemon.transport.kind(), "tcp")
 
-    def test_request_returns_the_error_payload(self):
-        self._without_af_unix()
-        reply = self.daemon.request({"op": "ping"})
+    def test_without_af_unix_request_round_trips_over_tcp(self):
+        """The Windows CI path end to end at the daemon client: request()
+        reaches a daemon bound on the loopback TCP + token transport and
+        never returns the AF_UNIX payload."""
+        with af_unix_removed(), tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "sebas"
+            received, thread = serve_one(data, {"status": "ok"},
+                                         transport=self.daemon.transport)
+            with mock.patch.object(self.daemon.core, "DATA", data), \
+                 mock.patch.object(self.daemon, "ensure_running"):
+                reply = self.daemon.request({"op": "ping"}, timeout=5)
+            thread.join(5)
+        self.assertEqual(reply, {"status": "ok"})
+        self.assertEqual(received["payload"], {"op": "ping"})
+
+    def test_request_returns_the_error_payload_when_neither_works(self):
+        with af_unix_removed(), attr_removed(socket, "AF_INET"):
+            reply = self.daemon.request({"op": "ping"})
         self.assertEqual(reply["status"], "daemon_error")
         self.assertIn("AF_UNIX", reply["problem"])
         self.assertIn("next_step", reply)
 
-    def test_alive_is_false_and_no_daemon_is_spawned(self):
-        self._without_af_unix()
-        with mock.patch.object(subprocess, "Popen") as popen:
-            self.daemon.ensure_running()
-        popen.assert_not_called()
-        self.assertFalse(self.daemon._alive())
+    def test_alive_is_false_and_no_daemon_is_spawned_when_neither_works(self):
+        with af_unix_removed(), attr_removed(socket, "AF_INET"):
+            with mock.patch.object(subprocess, "Popen") as popen:
+                self.daemon.ensure_running()
+            popen.assert_not_called()
+            self.assertFalse(self.daemon._alive())
 
-    def test_serve_refuses_with_a_clear_message(self):
-        self._without_af_unix()
-        with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(self.daemon, "LOG", Path(tmp) / "daemon.log"):
-                with self.assertRaises(RuntimeError) as caught:
-                    self.daemon.serve()
+    def test_serve_refuses_with_a_clear_message_when_neither_works(self):
+        with af_unix_removed(), attr_removed(socket, "AF_INET"):
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(self.daemon, "LOG", Path(tmp) / "daemon.log"):
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.daemon.serve()
         self.assertIn("AF_UNIX", str(caught.exception))
         self.assertIn("3.9+", str(caught.exception))
 
     def test_with_af_unix_the_guard_stays_silent(self):
-        self.assertIsNone(self.daemon._af_unix_missing())
+        self.assertIsNone(self.daemon._transport_unsupported())
 
 
 if __name__ == "__main__":

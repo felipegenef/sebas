@@ -85,8 +85,11 @@ shell.
     (`setup.ps1`) and needs Python 3.12/3.13 from python.org or the `py`
     launcher. Cards go through PowerShell toasts: BurntToast when the module
     is installed, raw WinRT toast XML otherwise. The daemon talks to the
-    servers over an AF_UNIX socket (Python 3.9+ has it) — see
-    [Troubleshooting](#troubleshooting) for the one path-length caveat.
+    servers over a private local socket: an AF_UNIX socket where the Python
+    build has one (Python 3.9+ does), or a loopback TCP socket guarded by a
+    random token where it does not — see
+    [Troubleshooting](#troubleshooting) for the one caveat of the AF_UNIX
+    flavor.
 
 Notification adapters and their trade-offs are documented in
 [`docs/notify-adapters.md`](docs/notify-adapters.md).
@@ -198,9 +201,16 @@ through its tools — or seeded once in the plugin options
 |---|---|---|
 | Butler name | `Sebas` | `set_butler_name` |
 | Your name, the people around you | unset | `set_user_name` |
-| **Form of address** — how you like to be called (a treatment such as "sir" or "doctor", or a complete form such as "Mr. Alex"), used verbatim and always cordial | language default greeting | `set_user_name` (`form_of_address`) |
+| **Form of address** — how you like to be called (a treatment such as "sir" or "doctor", or a complete form such as "Mr. Alex"), used verbatim and always cordial | neutral greeting (the plain name — never gendered) | `set_user_name` (`form_of_address`) |
 | Spoken language | English | `set_language` |
 | Voice and speed (0.5–2.0) | `bm_george` (English) / `pm_santa` (Portuguese) | `set_voice` (list first with `list_voices`) |
+
+**First run:** if no identity is saved yet, the butler asks once — your name,
+how you like to be called (senhor, senhora, doctor, boss, or any form you
+choose) and which language to speak (English / Portuguese) — saves the
+answers, and never asks again. Until it knows, it addresses you cordially but
+neutrally: the plain name, no gendered treatment, and it never guesses gender
+from a name.
 
 Everything the user sees or hears follows that language: the card title and
 button, the spoken short notices, the spoken greeting and the form of address
@@ -259,12 +269,19 @@ setup by hand (Install step 3). Check your speaker and volume outside OpenCode
 first.
 
 **Windows: the daemon cannot reach the voice server.** The daemon and the
-notification adapters talk over an AF_UNIX socket, which Windows supports from
-10 1803+ with Python 3.9+ (the setup installs 3.12/3.13 anyway). Socket paths
-are limited to about 108 characters: when your user profile path is very long,
-set `XDG_DATA_HOME` to a short directory (for example `D:\sebas`) **before**
-the first load (or before running the setup by hand), so `<data>/engine.sock`
-stays under the limit.
+notification adapters talk over a private local socket, chosen by what the
+Python build can do. With AF_UNIX (Python 3.9+ on Windows 10 1803+; the setup
+installs 3.12/3.13 anyway) it is an AF_UNIX socket at `<data>/engine.sock` —
+socket paths are limited to about 108 characters there: when your user
+profile path is very long, set `XDG_DATA_HOME` to a short directory (for
+example `D:\sebas`) **before** the first load (or before running the setup by
+hand), so `<data>/engine.sock` stays under the limit. Without AF_UNIX the
+daemon falls back to a loopback TCP socket on `127.0.0.1` — no path-length
+limit — guarded by a random token written to `<data>/engine.token` (0600) and
+sent as the first line of every connection, matching the unix socket's
+file-permission protection against other local users. Which flavor is live is
+visible in the data dir: `engine.sock` (AF_UNIX) or `engine.port` +
+`engine.token` (loopback TCP).
 
 **No notification cards.** Ask Sebas for `notification_status`, then
 `notification_request`. On macOS the card tool needs notification permission

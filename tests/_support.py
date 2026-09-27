@@ -1,4 +1,5 @@
-"""Shared helpers for the card tests: fake gi modules and root discovery.
+"""Shared helpers for the card tests: fake gi modules, a fake daemon bound
+through the real transport abstraction, and root discovery.
 
 Everything here keeps the tests off the real desktop: no gi import, no
 D-Bus, no notification server, no daemon socket, no audio. The wiring tests
@@ -9,7 +10,9 @@ hardcoded in test code.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import socket
 import sys
 import threading
 import types
@@ -259,3 +262,69 @@ def fake_gi():
     gi.repository = repo
     with mock.patch.dict(sys.modules, {"gi": gi, "gi.repository": repo}):
         yield notify_mod, glib_mod
+
+
+@contextlib.contextmanager
+def attr_removed(obj, name):
+    """Removes `obj.name` while the block runs; restores it only if it was
+    present (so the same tests run on builds where it never existed)."""
+    missing = not hasattr(obj, name)
+    if not missing:
+        saved = getattr(obj, name)
+        delattr(obj, name)
+    try:
+        yield
+    finally:
+        if not missing:
+            setattr(obj, name, saved)
+
+
+@contextlib.contextmanager
+def af_unix_removed():
+    """Simulates a Python build WITHOUT AF_UNIX (the CI Windows Python):
+    `socket.AF_UNIX` is gone while the block runs."""
+    with attr_removed(socket, "AF_UNIX"):
+        yield
+
+
+def serve_one(data: Path, reply: dict, *, transport):
+    """One-shot fake daemon, bound THROUGH THE TRANSPORT ABSTRACTION — the
+    same module the code under test uses, so the fake exercises the real
+    flavor choice, the real bind and the real token handshake.
+
+    Accepts ONE connection, consumes the handshake when the flavor has one,
+    records the request (raw bytes + parsed JSON) in the returned dict and
+    answers `reply` as one JSON line. Returns (received, thread)."""
+    listener = transport.bind_listener(Path(data))
+    received: dict = {}
+
+    def run():
+        conn = None
+        try:
+            conn, _ = listener.sock.accept()
+            refused, buf = transport.authorize(conn, listener)
+            if refused is not None:
+                received["refused"] = refused
+                conn.sendall((json.dumps(refused, ensure_ascii=False) + "\n").encode())
+                return
+            while not buf.endswith(b"\n"):
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+            received["raw"] = buf
+            received["payload"] = json.loads(buf.decode() or "{}")
+            conn.sendall((json.dumps(reply, ensure_ascii=False) + "\n").encode())
+        except (OSError, ValueError) as e:
+            received["error"] = e
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+            listener.sock.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return received, thread

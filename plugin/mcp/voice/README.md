@@ -132,8 +132,9 @@ to load — warn the user first.
   the user's name, the people around them and **`form_of_address`** — how the
   user likes to be called ("senhor", "senhora", "doutor", "chefe"… or the
   complete "senhor Alex"), used **verbatim** as the vocative by the persona
-  and the spoken greeting. Empty/unset = the language default
-  (`Senhor {first}` pt-br, `{first}` en-us); `form_of_address=""` clears it
+  and the spoken greeting. Empty/unset = the neutral default
+  (`{first}` — the plain first name in every language, never gendered);
+  `form_of_address=""` clears it
   back to that default and omitting the argument keeps the current value.
   `get_user_name` also returns `greeting_example`: what the greeting sounds
   like right now
@@ -151,8 +152,12 @@ to load — warn the user first.
 ## Architecture
 
 One daemon process owns audio (synthesis + playback) and serves MCP instances
-over a local socket; instances never load models themselves. Requests are
-serialized through a turn lock and models are released after idle time.
+over a private local socket — an AF_UNIX socket at `<data>/engine.sock` where
+the Python build has AF_UNIX, otherwise a loopback TCP socket on `127.0.0.1`
+guarded by a random token (`<data>/engine.port` + `<data>/engine.token`, both
+0600); `voice/transport.py` owns the choice. Instances never load models
+themselves. Requests are serialized through a turn lock and models are
+released after idle time.
 
 ## Files outside git
 
@@ -168,7 +173,10 @@ action needed), per machine:
   never lost)
 - `users.json` — identity (butler name, user, people, form of address)
 - `outputs` — generated `.wav` files
-- `engine.sock` / `engine.lock` / `daemon.log` — daemon socket, start lock and log
+- `engine.sock` **or** `engine.port` + `engine.token` — daemon endpoint:
+  AF_UNIX socket, or the loopback TCP + token fallback when the Python build
+  has no AF_UNIX (both token files 0600; see `voice/transport.py`)
+- `engine.lock` / `daemon.log` — daemon start lock and log
 - `setup.log` / `setup.lock` — automatic first-run setup output and its lock
 
 To move a pre-1.0 install to the new location at your own pace: create the

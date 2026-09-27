@@ -71,6 +71,43 @@ describe("butler instructions", () => {
     }
   })
 
+  test("carry the first-interaction rubric (ask once, then save)", () => {
+    const text = BUTLER_INSTRUCTIONS
+    // ask ONCE, everything in one friendly message
+    expect(text).toContain("First interaction")
+    expect(text).toContain("ASKS, ONCE")
+    expect(text).toContain("single friendly message")
+    // the three questions: name, how to be called, language
+    expect(text).toContain("how they like to be called")
+    expect(text).toContain("English and Portuguese")
+    // the answers are saved so the question is never repeated
+    expect(text).toContain("set_user_name(name, form_of_address=...)")
+    expect(text).toContain("set_language(...)")
+    expect(text).toContain("never repeated")
+    // never infer gender from a name
+    expect(text).toContain("never guess gender")
+  })
+
+  test("address the user neutrally until the identity is saved", () => {
+    const text = BUTLER_INSTRUCTIONS
+    expect(text).toContain("Until the identity is saved")
+    expect(text).toContain("NEUTRALLY")
+    expect(text).toContain("NO gendered treatment")
+  })
+
+  test("never contain a gendered default or example", () => {
+    const text = BUTLER_INSTRUCTIONS
+    // the Portuguese vocatives the ban above covers (kept explicit here so a
+    // future default like 'Senhor {first}' can never sneak back in)
+    for (const vocative of ["senhor", "senhora", "Senhor", "doutor", "chefe"]) {
+      expect(text).not.toContain(vocative)
+    }
+    // English gendered honorifics, word-bounded so substrings stay legal
+    expect(text).not.toMatch(/\b(sir|madam|madame|mister|mistress|mr|mrs|ms|miss|monsieur|mademoiselle|herr|frau)\b/i)
+    // and no greeting template that could carry one
+    expect(text).not.toContain("{first}")
+  })
+
   test("contain no machine-specific paths", () => {
     const text = BUTLER_INSTRUCTIONS
     for (const needle of ["/home/", "/Users/", "C:\\", "~/.config", "~/.local", "/tmp/"]) {

@@ -9,13 +9,26 @@ install's daemon socket with no user action needed.
 This package cannot import the voice server (the bridge loads it standalone
 through SEBAS_NOTIFY_PATH), so the rule lives here as the card side's single
 resolution point; nothing else in this package hardcodes either name. The
-daemon socket, like everything else in the data dir, derives from the one
-resolved DATA value.
+daemon endpoint — socket names and the unix/tcp flavor choice included — is
+owned by transport.py (byte-identical with voice/transport.py); the helper
+here just resolves the data dir and delegates.
 """
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+# The endpoint rule lives in transport.py; this module is also loaded
+# STANDALONE (no package context), hence the fallback import.
+try:  # package use
+    from .transport import unix_socket as _unix_socket
+except ImportError:  # standalone use (tests/adapters load this file directly)
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("_notify_paths_transport",
+                                         str(Path(__file__).with_name("transport.py")))
+    _transport = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_transport)
+    _unix_socket = _transport.unix_socket
 
 # Directory name of a pre-1.0 install. Referenced ONLY by the auto-detection
 # below — see the module docstring.
@@ -38,5 +51,7 @@ def data_dir(env=None, home=None) -> tuple[Path, bool]:
 
 
 def daemon_socket(env=None, home=None) -> Path:
-    """Voice daemon socket: <data dir>/engine.sock, resolved at runtime."""
-    return data_dir(env, home)[0] / "engine.sock"
+    """Voice daemon unix endpoint: <data dir>/engine.sock, resolved at
+    runtime and delegated to transport.unix_socket (the one endpoint rule —
+    which flavor the daemon actually speaks is transport's decision)."""
+    return _unix_socket(data_dir(env, home)[0])

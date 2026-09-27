@@ -34,12 +34,12 @@ from __future__ import annotations
 import html
 import json
 import os
-import socket
 import threading
 from pathlib import Path
 
 from . import LINUX_URGENCY, normalize_urgency, strings_for
-from .paths import daemon_socket as _shared_daemon_socket
+from . import transport as _transport
+from .paths import data_dir as _data_dir
 
 CARD_TIMEOUT_SECONDS = 300       # self-close; the card is never re-shown after
 SHOW_TIMEOUT_SECONDS = 5         # max wait for the notification server to show
@@ -48,30 +48,35 @@ ACTION_KEY = "listen"            # ActionInvoked action_key
 
 
 def socket_path() -> Path:
-    """Voice daemon socket: <data dir>/engine.sock (see notify/paths.py —
-    the one resolution rule, legacy install included)."""
-    return _shared_daemon_socket()
+    """Voice daemon unix endpoint: <data dir>/engine.sock (see
+    notify/transport.py — the one endpoint rule, legacy install included;
+    which flavor the daemon speaks is transport's decision)."""
+    return _transport.unix_socket(_data_dir()[0])
 
 
 def play_via_daemon(text: str, context: str | None = None,
-                    sock_path: Path | str | None = None,
+                    data: Path | str | None = None,
                     timeout: float = SOCKET_TIMEOUT_SECONDS) -> dict:
-    """Plays `text` through the voice daemon socket (confirmed semantics).
+    """Plays `text` through the voice daemon (confirmed semantics).
 
     One JSON line per request: {"op":"speak","text":...,"confirmed":true,
     "play":true} (plus "context" when known). The click on the card IS the
     user's confirmation: the daemon plays the FULL text as-is in turn — never
     a short notice, never an announcement, never re-carded — behind whatever
     is already playing (R4), so two voices never overlap. Never raises and
-    never touches the speaker directly.
+    never touches the speaker directly. `data` overrides the resolved data
+    dir (test seam); the transport (AF_UNIX socket or loopback TCP + token)
+    is chosen by notify/transport.py.
     """
     payload = {"op": "speak", "text": text, "confirmed": True, "play": True}
     if context:
         payload["context"] = context
+    data = Path(data) if data is not None else _data_dir()[0]
+    unsupported = _transport.unsupported_payload(status="daemon_unreachable")
+    if unsupported is not None:
+        return unsupported
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(str(sock_path or socket_path()))
+        with _transport.connect(data, timeout=timeout) as s:
             s.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode())
             buf = b""
             while not buf.endswith(b"\n"):

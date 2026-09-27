@@ -13,7 +13,9 @@ audio. Rules under test:
 """
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -22,7 +24,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin"))
 
-from _support import mcp_root
+from _support import af_unix_removed, mcp_root
 
 
 class _FlakyLock:
@@ -615,6 +617,69 @@ class NoOverlapTest(_McpCase):
         reply = self.daemon._serve_voice(self.speak_req("Third message"))
         self.assertEqual(reply["status"], "ok")
         self.assertTrue(reply["played"])
+
+
+class NoOverlapThroughTcpTransportTest(_McpCase):
+    """R1 holds through the REAL wire too: two CONCURRENT confirmed speak
+    requests (the card-click collision — both must be spoken) arriving over
+    the loopback TCP + token transport (the no-AF_UNIX world — the CI
+    Windows Python) still play ONE at a time; the transport changes nothing
+    about the turn.
+
+    The listener and the clients go through voice/transport.py — the same
+    module the daemon serves with — the requests are handled by the REAL
+    _serve_conn (one thread per connection), and synthesis/playback are the
+    shared fakes (fake_voice) that count any overlap."""
+
+    def test_two_requests_play_one_at_a_time_over_tcp(self):
+        with af_unix_removed(), tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "sebas"
+            rec = self.fake_voice(play_delay=0.2)
+            listener = self.daemon.transport.bind_listener(data)
+            self.addCleanup(listener.sock.close)
+
+            def accept_loop():
+                while True:
+                    try:
+                        conn, _ = listener.sock.accept()
+                    except OSError:
+                        return                    # listener closed
+                    threading.Thread(target=self.daemon._serve_conn,
+                                     args=(conn, listener), daemon=True).start()
+
+            threading.Thread(target=accept_loop, daemon=True).start()
+            replies: list = []
+            errors: list = []
+
+            def client(text):
+                try:
+                    with self.daemon.transport.connect(data, timeout=30) as s:
+                        # confirmed=true: a card click / user-confirmed message
+                        # waits its turn and plays the FULL text (R4) — the
+                        # collision where R1 matters: both WILL be spoken.
+                        req = self.speak_req(text, confirmed=True)
+                        s.sendall((json.dumps(req) + "\n").encode())
+                        buf = b""
+                        while not buf.endswith(b"\n"):
+                            buf += s.recv(65536)
+                        replies.append(json.loads(buf))
+                except Exception as e:
+                    errors.append(repr(e))
+
+            workers = [threading.Thread(target=client, args=(text,), daemon=True)
+                       for text in ("First message", "Second message")]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(30)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(sorted(r["status"] for r in replies), ["ok", "ok"])
+            self.assertTrue(all(r["played"] for r in replies))
+            self.assertEqual(sorted(rec["generated"]),
+                             ["First message", "Second message"])
+            self.assertEqual(len(rec["played"]), 2)     # both played...
+            self.assertEqual(rec["overlaps"], 0)        # ...never at the same time
 
 
 if __name__ == "__main__":

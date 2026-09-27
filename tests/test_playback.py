@@ -1,60 +1,44 @@
-"""Playback goes through the voice daemon socket: exact wire format.
+"""Playback goes through the voice daemon: exact wire format.
 
-A fake Unix socket stands in for the daemon, so the tests verify the
-protocol line without ever connecting to the real engine.sock and without
-playing anything.
+A fake daemon — bound through the SAME transport abstraction the adapter
+uses (notify/transport.py) — stands in for the real one, so the tests verify
+the protocol line without ever connecting to a live daemon and without
+playing anything. The fake binds the flavor this Python build uses: the
+AF_UNIX socket on POSIX, the loopback TCP + token fallback otherwise — so
+the wire is proven on every CI leg.
 """
 from __future__ import annotations
 
 import json
 import os
-import socket
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # for _support
 
 import notify.linux as linux
+from _support import serve_one
+
+notify_transport = linux._transport   # the adapter's own transport module
 
 
 class PlaybackProtocolTest(unittest.TestCase):
-    def _serve_once(self, sock_path: Path):
-        """One-shot fake daemon; returns (received, server_thread)."""
-        received = {}
-        ready = threading.Event()
-
-        def run():
-            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            srv.bind(str(sock_path))
-            srv.listen(1)
-            ready.set()
-            conn, _ = srv.accept()
-            buf = b""
-            while not buf.endswith(b"\n"):
-                chunk = conn.recv(65536)
-                if not chunk:
-                    break
-                buf += chunk
-            received["payload"] = json.loads(buf.decode())
-            conn.sendall(b'{"status": "ok", "played": true}\n')
-            conn.close()
-            srv.close()
-
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
-        self.assertTrue(ready.wait(5))
-        return received, thread
+    def _serve_once(self, data: Path, reply: dict | None = None):
+        """One-shot fake daemon through the transport abstraction; returns
+        (received, server_thread)."""
+        return serve_one(data, reply or {"status": "ok", "played": True},
+                         transport=notify_transport)
 
     def test_button_sends_confirmed_full_playback(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sock = Path(tmp) / "engine.sock"
-            received, thread = self._serve_once(sock)
+            data = Path(tmp) / "sebas"
+            received, thread = self._serve_once(data)
             reply = linux.play_via_daemon("Full message", context="Agente X",
-                                          sock_path=sock, timeout=5)
+                                          data=data, timeout=5)
             thread.join(5)
         self.assertEqual(reply["status"], "ok")
         self.assertEqual(received["payload"],
@@ -64,9 +48,9 @@ class PlaybackProtocolTest(unittest.TestCase):
 
     def test_context_is_omitted_when_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sock = Path(tmp) / "engine.sock"
-            received, thread = self._serve_once(sock)
-            linux.play_via_daemon("Full message", sock_path=sock, timeout=5)
+            data = Path(tmp) / "sebas"
+            received, thread = self._serve_once(data)
+            linux.play_via_daemon("Full message", data=data, timeout=5)
             thread.join(5)
         self.assertEqual(received["payload"],
                          {"op": "speak", "text": "Full message",
@@ -75,8 +59,7 @@ class PlaybackProtocolTest(unittest.TestCase):
     def test_unreachable_daemon_is_a_payload_not_an_exception(self):
         with tempfile.TemporaryDirectory() as tmp:
             reply = linux.play_via_daemon("Full message",
-                                          sock_path=Path(tmp) / "missing.sock",
-                                          timeout=2)
+                                          data=Path(tmp) / "missing", timeout=2)
         self.assertEqual(reply["status"], "daemon_unreachable")
         self.assertIn("next_step", reply)
 
