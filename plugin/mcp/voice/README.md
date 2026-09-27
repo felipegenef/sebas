@@ -82,6 +82,18 @@ chat confirmation, exactly as before.
 
 ## Install
 
+Under the Sebas plugin nothing is needed: the plugin installs this runtime
+**automatically on first load** (this very script, in the background — a few
+minutes, ~300 MB, output in `setup.log` next to the plugin log) and reloads
+the voice server when it finishes, with no restart. The plugin keeps watching
+the install the whole time — fast checks at first, then one every ~45 s for a
+slow download — and until the venv exists `run.sh` starts this server with a
+system Python (`python3.13` → `python3.12` → `python3`), so `speak` and
+`voice_status` answer `{"status": "installing"}` right away instead of
+failing. To install by hand —
+offline installs, troubleshooting, or running this server standalone — use the
+scripts directly; both are idempotent and safe to re-run at any time:
+
 ```bash
 bash setup.sh     # venv + kokoro-onnx + weights (~300 MB)
 python3 demo.py --status
@@ -89,7 +101,8 @@ python3 demo.py --text "Testing the voice." --voice pm_santa
 ```
 
 Windows, from PowerShell (`setup.ps1` is the mirror of `setup.sh` — same data
-directory, same packages, same weights):
+directory, same packages, same weights; the automatic setup prefers `pwsh`,
+PowerShell 7, whenever it is present):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
@@ -156,6 +169,7 @@ action needed), per machine:
 - `users.json` — identity (butler name, user, people, form of address)
 - `outputs` — generated `.wav` files
 - `engine.sock` / `engine.lock` / `daemon.log` — daemon socket, start lock and log
+- `setup.log` / `setup.lock` — automatic first-run setup output and its lock
 
 To move a pre-1.0 install to the new location at your own pace: create the
 new directory and move the files over (`venv`, `users.json`, the voice

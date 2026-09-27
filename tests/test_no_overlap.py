@@ -74,6 +74,13 @@ class _McpCase(unittest.TestCase):
                                               "speed": 1.0})
         cfg.start()
         self.addCleanup(cfg.stop)
+        # These tests pin queue semantics GIVEN a complete runtime. The
+        # first-run 'installing' guard reads the machine's real data dir
+        # otherwise (see test_installing_state.py for the guard itself), so it
+        # is neutralized here: no machine state may leak into these tests.
+        guard = mock.patch.object(core, "installing_payload", return_value=None)
+        guard.start()
+        self.addCleanup(guard.stop)
 
     def tearDown(self):
         (self.daemon._TURN, self.daemon._PLAN, self.daemon._INFLIGHT,

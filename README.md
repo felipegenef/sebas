@@ -72,8 +72,8 @@ shell.
 - **OpenCode V2** (the plugin uses the V2 plugin API).
 - **A speaker.** That is the point.
 - **Python 3** (3.12 or 3.13) and about **300 MB of disk** for the TTS model,
-  plus a small virtual environment for the voice server. The first `setup` step
-  downloads the model once.
+  plus a small virtual environment for the voice server. The first load
+  installs both automatically — the model is downloaded once.
 - Per operating system:
   - **Linux** — fully tested. Cards go through freedesktop notifications
     (libnotify); CRITICAL urgency bypasses Do-Not-Disturb.
@@ -93,8 +93,9 @@ Notification adapters and their trade-offs are documented in
 
 ## Install
 
-One line in your OpenCode config. About a minute of work plus the one-time
-~300 MB model download.
+One line in your OpenCode config. The first load installs the voice runtime
+**automatically** — a few minutes for the one-time ~300 MB model download, no
+manual step and no second restart.
 
 1. **Add the plugin** to the `plugins` array in `opencode.json` or
    `opencode.jsonc` — globally (`~/.config/opencode/`) or per project
@@ -115,32 +116,50 @@ One line in your OpenCode config. About a minute of work plus the one-time
 2. **Restart OpenCode.** Loading or changing a plugin requires a restart;
    nothing takes effect mid-session. (Warn anyone who is mid-work.)
 
-3. **Run the voice setup once.** It creates the Python environment and downloads
-   the Kokoro model (~300 MB) into Sebas's data directory
-   (`$XDG_DATA_HOME/sebas`, default `~/.local/share/sebas` — the same rule on
-   every operating system):
+3. **That is all.** On this first load the plugin installs the voice runtime in
+   the background: it creates the Python environment and downloads the Kokoro
+   model (~300 MB) into Sebas's data directory (`$XDG_DATA_HOME/sebas`, default
+   `~/.local/share/sebas` — the same rule on every operating system), using the
+   packaged `setup.sh` on Linux/macOS and `setup.ps1` on Windows. Progress is
+   logged to `plugin.log` and `setup.log` there. **When it finishes, speech is
+   available immediately — the voice server reloads itself, no restart needed.**
+   Until then `speak` and `voice_status` answer `{"status": "installing"}` with
+   the same explanation instead of an error — on Linux, macOS and Windows alike:
+   while the venv does not exist yet, the server starts with a system Python
+   (`python3.13`, then `python3.12`, then `python3`; Windows falls back to
+   `python`), so the installing state is answered from the very first second.
+   The plugin keeps watching the whole install — quick checks at first, then one
+   every ~45 s for a slow download — until the runtime is ready. Only past a
+   two-hour horizon does it stop watching, and it says so in the log: restart
+   OpenCode when the setup finishes.
 
-   ```bash
-   bash <voice-mcp-dir>/setup.sh
-   ```
+4. **Verify**: open a session and ask "introduce yourself and say one sentence
+   out loud". Sebas answers in text and speaks. For the machine-level check,
+   ask it to run `voice_status` — it reports the engine state — or `list_voices`
+   to see the voices available in your language.
 
-   Windows, from PowerShell:
+**Offline install or troubleshooting?** The setup can always be run by hand —
+both scripts are idempotent, safe to re-run at any time, and do exactly what
+the automatic first run does:
 
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File <voice-mcp-dir>\setup.ps1
-   ```
+```bash
+bash <voice-mcp-dir>/setup.sh
+```
 
-   From a source checkout `<voice-mcp-dir>` is `plugin/mcp/voice`. For a package
-   install, the exact resolved path is printed in the startup log — see
-   [Troubleshooting](#troubleshooting) for where the log lives. Both scripts are
-   idempotent: safe to re-run at any time. If neither was ever run, the voice
-   server prints this very command on startup.
+Windows, from PowerShell:
 
-4. **Restart OpenCode again** (the voice server starts with the session), then
-   **verify**: open a session and ask "introduce yourself and say one sentence
-   out loud". Sebas answers in text and speaks. For the machine-level check, ask
-   it to run `voice_status` — it reports the engine state — or `list_voices` to
-   see the voices available in your language.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <voice-mcp-dir>\setup.ps1
+```
+
+The automatic setup prefers PowerShell 7 (`pwsh`) whenever it is installed and
+falls back to Windows PowerShell (`powershell`) otherwise — nothing to choose.
+
+From a source checkout `<voice-mcp-dir>` is `plugin/mcp/voice`. For a package
+install, the exact resolved path is printed in the startup log — see
+[Troubleshooting](#troubleshooting) for where the log lives. If the automatic
+setup cannot start (no Python, no network), the plugin logs the reason and
+`voice_status` points at these very commands.
 
 ### Make it quiet
 
@@ -229,16 +248,20 @@ re-shown. Cards stack — one per parked message — and each plays in its own t
 
 ## Troubleshooting
 
-**Nothing is spoken.** Ask Sebas for `voice_status`. If the engine is missing,
-run the voice setup (Install step 3) and restart. Check your speaker and volume
-outside OpenCode first.
+**Nothing is spoken.** Ask Sebas for `voice_status`. If it answers
+`{"status": "installing"}`, the voice runtime is still being set up — speech
+appears by itself when it finishes (no restart). If the engine is missing after
+that, the automatic setup failed: check `setup.log` in the data dir and run the
+setup by hand (Install step 3). Check your speaker and volume outside OpenCode
+first.
 
 **Windows: the daemon cannot reach the voice server.** The daemon and the
 notification adapters talk over an AF_UNIX socket, which Windows supports from
 10 1803+ with Python 3.9+ (the setup installs 3.12/3.13 anyway). Socket paths
 are limited to about 108 characters: when your user profile path is very long,
 set `XDG_DATA_HOME` to a short directory (for example `D:\sebas`) **before**
-running the setup, so `<data>/engine.sock` stays under the limit.
+the first load (or before running the setup by hand), so `<data>/engine.sock`
+stays under the limit.
 
 **No notification cards.** Ask Sebas for `notification_status`, then
 `notification_request`. On macOS the card tool needs notification permission
@@ -252,7 +275,9 @@ mid-session.
 
 **Diagnostics.** Every line the plugin logs also lands in
 `~/.local/share/sebas/plugin.log` (`$XDG_DATA_HOME/sebas`): what was resolved,
-from where, and every registration decision. Start there.
+from where, every registration decision and every step of the automatic
+voice-runtime install. The installer's own output lands beside it in
+`setup.log`. Start there.
 
 More detail: [`plugin/README.md`](plugin/README.md) · adapter research:
 [`docs/notify-adapters.md`](docs/notify-adapters.md) · release history:

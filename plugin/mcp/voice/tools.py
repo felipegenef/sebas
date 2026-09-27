@@ -53,6 +53,9 @@ def speak(text: str, play: bool | None = None, context: str | None = None,
     awaiting_confirmation — ask the user, and if they confirm, call again with
     confirmed=true to play the full message in turn.
     """
+    installing = core.installing_payload()
+    if installing is not None:
+        return installing
     if not confirmed and notify_bridge.available():
         result = _speak_card(text, play=play, context=context)
     else:
@@ -147,13 +150,20 @@ def list_voices() -> dict:
 
 def voice_status() -> dict:
     """Engine state and the active configuration."""
+    installing = core.installing_payload()
+    if installing is not None:
+        return installing
     return {"status": "ok", **engine.status(),
-            "next_step": "If the model is missing re-run the plugin setup; "
+            "next_step": "If the model is missing the plugin installs it "
+                         "automatically on first load (see setup.log); "
                          "otherwise call speak(...)."}
 
 
 def measure_rtf(text: str | None = None, play: bool = False) -> dict:
     """Measures this machine's real speed (RTF < 1 = faster than real time)."""
+    installing = core.installing_payload()
+    if installing is not None:
+        return installing
     text = text or ("This is a speed measurement of the voice engine. "
                     "We are checking the real audio generation time.")
     r = engine.speak(text, play=play)
@@ -166,6 +176,9 @@ def measure_rtf(text: str | None = None, play: bool = False) -> dict:
 
 def warmup() -> dict:
     """Loads the engine into memory so the first real speech is fast."""
+    installing = core.installing_payload()
+    if installing is not None:
+        return installing
     r = engine.speak("Engine warmup.", play=False)
     return {"status": r.get("status"), "engine": r.get("engine"),
             "generation_seconds": r.get("generation_seconds"),

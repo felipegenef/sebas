@@ -49,6 +49,14 @@ class _McpCase(unittest.TestCase):
         from voice import daemon
         self.tools = tools
         self.daemon = daemon
+        # These tests pin the queue wiring GIVEN a complete runtime. The
+        # first-run 'installing' guard reads the machine's real data dir
+        # otherwise (see test_installing_state.py for the guard itself), so it
+        # is neutralized here: no machine state may leak into these tests.
+        guard = mock.patch.object(tools.core, "installing_payload",
+                                  return_value=None)
+        guard.start()
+        self.addCleanup(guard.stop)
 
 
 class SpeakCardWiringTest(_McpCase):

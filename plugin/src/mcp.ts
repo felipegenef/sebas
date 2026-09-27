@@ -98,6 +98,18 @@ export type TransformOutcome =
   | { readonly branch: "failed"; readonly reason: string }
 
 /**
+ * What this plugin wrote earlier in this PROCESS. A replay must recognize its
+ * own earlier registration even when the resolved launch recipe has changed
+ * since — the first-run runtime setup flips Windows from `python server.py` to
+ * the venv interpreter mid-session, and that update is the plugin refreshing
+ * itself, never clobbering a user entry (a user's entry can never equal a
+ * config only this plugin ever wrote).
+ */
+export interface TransformMemory {
+  registered?: Mcp.ServerConfig
+}
+
+/**
  * Body of the `ctx.mcp.transform` callback — the REPLAYABLE registration.
  *
  * V2 rebuilds the MCP registry "by replaying every active transform in
@@ -110,12 +122,14 @@ export type TransformOutcome =
  *
  * Ownership rule (user configuration always wins): when the editor already
  * holds a `voice` entry that is not byte-identical to the config the plugin
- * registers, the transform writes NOTHING — the user's `command`, `cwd`,
- * `protocol`, `codemode` and every other key stay exactly as written. The
- * plugin only (re-)registers when the entry is absent or is its own earlier
- * registration.
+ * registers — nor to the config this plugin wrote earlier in this process
+ * (see {@link TransformMemory}) — the transform writes NOTHING: the user's
+ * `command`, `cwd`, `protocol`, `codemode` and every other key stay exactly as
+ * written. The plugin only (re-)registers when the entry is absent or is its
+ * own earlier registration (same config, or its recorded one while the launch
+ * recipe refreshes mid-session).
  */
-export function applyVoiceTransform(editor: MCPEditor, input: VoiceWireInput): TransformOutcome {
+export function applyVoiceTransform(editor: MCPEditor, input: VoiceWireInput, memory?: TransformMemory): TransformOutcome {
   try {
     const existing = editor.get(VOICE_MCP_NAME)
     const config =
@@ -127,10 +141,17 @@ export function applyVoiceTransform(editor: MCPEditor, input: VoiceWireInput): T
             ...(input.protocol !== undefined ? { protocol: input.protocol } : {}),
             ...(input.codemode !== undefined ? { codemode: input.codemode } : {}),
           })
-    const ours = existing !== undefined && config !== undefined && sameServerConfig(existing, config)
+    const ours =
+      existing !== undefined &&
+      config !== undefined &&
+      (sameServerConfig(existing, config) ||
+        (memory !== undefined &&
+          memory.registered !== undefined &&
+          sameServerConfig(existing, memory.registered)))
     if (existing !== undefined && !ours) return { branch: "skipped-user-entry" }
     if (config === undefined) return { branch: "skipped-no-launch" }
     editor.set(VOICE_MCP_NAME, config)
+    if (memory !== undefined) memory.registered = config
     return { branch: existing === undefined ? "registered" : "refreshed" }
   } catch (error) {
     return { branch: "failed", reason: error instanceof Error ? error.message : String(error) }

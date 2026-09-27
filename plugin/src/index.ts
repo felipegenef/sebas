@@ -49,8 +49,10 @@ import {
 import {
   applyVoiceTransform,
   VOICE_MCP_NAME,
+  type TransformMemory,
   type VoiceWireInput,
 } from "./mcp"
+import { ensureVoiceRuntime, watchVoiceRuntime } from "./runtime"
 
 /** Plugin id as it appears in OpenCode's plugin registry. */
 export const PLUGIN_ID = "sebas"
@@ -137,6 +139,7 @@ export default Plugin.define({
 
     const pluginRoot = findPluginRoot()
     const disposals: Array<() => Promise<void>> = []
+    let disposed = false
 
     // ---- identity/config in plugin storage (migration source: voice server's JSON) ----
     try {
@@ -166,14 +169,17 @@ export default Plugin.define({
       log("warn", `instructions hook registration failed (${describeError(error)})`)
     }
 
-    // ---- voice MCP: external state resolved ONCE, at setup ----
-    // The transform callback below captures these values. Per the V2 docs,
-    // captured inputs are not watched and `reload()` is only for when they
-    // CHANGE — they cannot change within a process, so no reload is called.
+    // ---- voice MCP: external pieces resolved at setup ----
+    // Per the V2 docs, captured inputs are not watched: `reload()` is how a
+    // transform learns that its inputs CHANGED. The notify path and protocol
+    // are fixed for the life of the process; the launch recipe alone is
+    // re-derived on every replay, because the automatic runtime setup below
+    // changes it mid-session (Windows flips from `python server.py` to the
+    // venv interpreter once the venv exists) — and the completion watcher
+    // calls `ctx.mcp.reload()` when that happens, so the relaunch needs no
+    // restart.
     const voiceDir = resolveVoiceDir({ options, env: process.env, pluginRoot })
     for (const warning of voiceDir.warnings) log("warn", warning)
-    const launch =
-      voiceDir.status === "ok" ? resolveVoiceCommand({ options, voiceDir: voiceDir.value }) : undefined
     if (voiceDir.status === "ok") {
       log("info", `voice MCP located via ${voiceDir.source} (option → env → layout precedence)`)
     } else {
@@ -190,8 +196,8 @@ export default Plugin.define({
     }
 
     // Only-present keys all the way down: V2 rejects present-but-undefined.
+    // The launch recipe is added per replay (see the voiceDir comment above).
     const input: VoiceWireInput = {
-      ...(launch !== undefined ? { launch } : {}),
       ...(notifyPath !== undefined ? { notifyPath } : {}),
       ...(options.mcpProtocol !== undefined ? { protocol: options.mcpProtocol } : {}),
       ...(options.codemode !== undefined ? { codemode: options.codemode } : {}),
@@ -203,9 +209,19 @@ export default Plugin.define({
     // callback must re-apply itself on every replay. It is cheap, synchronous
     // and must never throw — a throwing transform silently disables the whole
     // plugin, MCP servers included (applyVoiceTransform swallows and reports).
+    // `memory` remembers the last config this plugin wrote so a replay can
+    // recognize its own entry while the launch recipe refreshes (runtime
+    // setup completing) — a user-configured entry is still never touched.
+    const memory: TransformMemory = {}
     try {
       const registration = await ctx.mcp.transform((editor) => {
-        const outcome = applyVoiceTransform(editor, input)
+        const launch =
+          voiceDir.status === "ok" ? resolveVoiceCommand({ options, voiceDir: voiceDir.value }) : undefined
+        const outcome = applyVoiceTransform(
+          editor,
+          { ...input, ...(launch !== undefined ? { launch } : {}) },
+          memory,
+        )
         switch (outcome.branch) {
           case "registered":
             log("info", "transform run: 'voice' absent from the editor; registered ours")
@@ -244,7 +260,49 @@ export default Plugin.define({
       log("warn", `post-registration ctx.mcp.list() failed (${describeError(error)})`)
     }
 
+    // ---- voice runtime: installed automatically on first load ----
+    // Non-blocking by design: the ~300 MB setup runs DETACHED in the
+    // background and setup() never waits for it. When it completes, the
+    // watcher calls ctx.mcp.reload(): the voice MCP relaunches with the
+    // installed runtime (the venv interpreter), so speech needs NO restart.
+    // Everything is contained — a failing setup must never break the plugin.
+    // Placed after the transform registration on purpose: any reload it
+    // schedules must find the voice transform already registered.
+    if (voiceDir.status === "ok") {
+      const dataDir = resolveDataDir(process.env)
+      void ensureVoiceRuntime({ dataDir, voiceDir: voiceDir.value, log })
+        .then((result) => {
+          if (result.status === "ready") {
+            log("info", "voice runtime ready (venv and model present)")
+            return
+          }
+          if (result.status === "failed") {
+            log("warn", `voice runtime setup not started: ${result.problem}. ${result.nextStep}`)
+            return
+          }
+          log(
+            "info",
+            `voice runtime installing in the background (~300 MB) — speech is available when it finishes. ` +
+              `${result.detail}; progress in ${result.setupLog}`,
+          )
+          const watch = watchVoiceRuntime({
+            dataDir,
+            log,
+            onReady: async () => {
+              await ctx.mcp.reload()
+              log("info", "voice MCP reloaded with the installed runtime — speech is available without a restart")
+            },
+          })
+          if (disposed) watch.stop()
+          else disposals.push(async () => { watch.stop() })
+        })
+        .catch((error) => {
+          log("warn", `voice runtime setup failed (${describeError(error)}); the plugin continues without it`)
+        })
+    }
+
     return async () => {
+      disposed = true
       await Promise.all(disposals.map((dispose) => dispose()))
     }
   },

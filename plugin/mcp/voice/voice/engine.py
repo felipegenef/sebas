@@ -27,6 +27,9 @@ def _daemon(payload: dict) -> dict | None:
 
 def status() -> dict:
     """Engine state: from the daemon when it is up, local probe otherwise."""
+    installing = core.installing_payload()
+    if installing is not None:
+        return installing          # never (re)start a daemon that cannot work
     reply = _daemon({"op": "status"})
     if reply and reply.get("status") == "ok":
         reply["daemon"] = "running"
@@ -51,6 +54,9 @@ def speak(text: str, play: bool | None = None, context: str | None = None,
     text = (text or "").strip()
     if not text:
         return {"status": "empty_text", "next_step": "Pass the text to speak."}
+    installing = core.installing_payload()
+    if installing is not None:
+        return installing          # nothing could be synthesized yet: no daemon
     cfg = load_config()
     want_play = cfg.get("play", True) if play is None else bool(play)
     t0 = time.perf_counter()

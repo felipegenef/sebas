@@ -21,10 +21,24 @@ What the plugin wires on load:
 3. **Identity and voice config in plugin `storage`** (butler name, user names,
    people, form of address, language, voice, speed), seeded once from the
    pre-1.0 standalone voice MCP's files when present (read-only import).
+4. **The voice runtime, installed automatically on first load.** The Python
+   venv and the ~300 MB Kokoro weights are created in the background by the
+   packaged `setup.sh` (Linux/macOS) or `setup.ps1` (Windows) — no manual
+   step. When the install finishes, the `voice` MCP is reloaded and speech is
+   available **without any restart**; until then `speak` and `voice_status`
+   answer `{"status": "installing"}` with the same explanation — servable on
+   all three operating systems from the first second, because before the venv
+   exists the server starts with a system Python (`python3.13` → `python3.12`
+   → `python3`). The plugin keeps watching the install (fast at first, then
+   once every ~45 s) until the runtime is ready; only past a two-hour bound
+   does it stop — logging that OpenCode must be restarted when the setup
+   finishes. Setup output goes to `setup.log` in the data directory.
 
 > **⚠️ An OpenCode restart is required** to load this plugin or to apply any
 > change to its registration, options or the `voice` MCP. Nothing takes effect
-> mid-session — warn the user before restarting.
+> mid-session — warn the user before restarting. (The first-run voice runtime
+> install above is the exception: it completes in the background and the voice
+> MCP reloads itself when it is done.)
 
 ## Layout
 
@@ -44,7 +58,7 @@ machine:
 | Knob | Where | Default | Meaning |
 |---|---|---|---|
 | `voiceDir` | plugin option | — | Directory containing the voice MCP (`server.py`) |
-| `voiceCommand` | plugin option | `["bash","run.sh"]` on POSIX; on Windows the venv interpreter (`<data>/venv/Scripts/python.exe`) with `server.py` once the voice setup ran, else `["python","server.py"]` | Full launch command for the voice MCP |
+| `voiceCommand` | plugin option | `["bash","run.sh"]` on POSIX (`run.sh` prefers the venv interpreter and falls back to a system `python3` until it exists); on Windows the venv interpreter (`<data>/venv/Scripts/python.exe`) with `server.py` once the voice setup ran, else `["python","server.py"]` | Full launch command for the voice MCP |
 | `notifyPath` | plugin option | — | Directory that **contains** the `notify/` package |
 | `mcpProtocol` | plugin option | auto-negotiate | `legacy` \| `auto` \| `2026-07-28` |
 | `codemode` | plugin option | `false` | Expose the tools through Code Mode instead of plain tools |
@@ -148,6 +162,9 @@ What the file records, in order:
   entry was the plugin's own or the user's, and which branch ran — registered,
   refreshed (replay), user entry left untouched, nothing to register, or a
   caught error;
+- the automatic voice-runtime install: ready, installing in the background, or
+  failed with a reason — plus the `voice` MCP reload when it completes. The
+  installer's own output lands beside this file in **`setup.log`**;
 - the post-registration view of `voice` from `ctx.mcp.list()` (its connection
   status).
 
@@ -164,12 +181,15 @@ plugin replaces that install. About five minutes plus two restarts:
    the `mcp` section of your OpenCode config. Required: the plugin never
    overwrites a server named `voice` that you configured — if your entry stays,
    the plugin stands down and you keep running the old copy.
-3. **Voice runtime:** if this machine never ran the standalone server, run the
-   packaged setup once — `bash <plugin>/mcp/voice/setup.sh` (Windows:
-   `powershell -NoProfile -ExecutionPolicy Bypass -File
-   <plugin>\mcp\voice\setup.ps1`). If it did, there is
-   nothing to do: the legacy data directory is auto-detected and reused, model
-   and all.
+3. **Voice runtime:** if this machine never ran the standalone server, nothing
+   to run — the first load installs the voice runtime automatically (a few
+   minutes, ~300 MB, progress in `plugin.log` / `setup.log`). If it did, there
+   is likewise nothing to do: the legacy data directory is auto-detected and
+   reused, model and all. The packaged setup (`bash <plugin>/mcp/voice/setup.sh`,
+   Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File
+   <plugin>\mcp\voice\setup.ps1` — the automatic setup prefers `pwsh`
+   (PowerShell 7) whenever it is present and falls back to `powershell`)
+   remains as the offline/troubleshooting path.
 4. **Restart OpenCode.**
 5. **Verify.** The startup log carries a `[sebas]` line saying the voice MCP was
    registered and whether notification cards are enabled; `voice_status` answers

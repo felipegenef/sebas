@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0.1 — 2026-09-27
+
+**Automatic first-run voice setup on Linux, macOS and Windows: no manual step,
+no extra restart.** Installing the plugin and restarting once is now the whole
+install — the step that used to be run by hand is gone.
+
+- **The voice runtime installs itself on first load.** The plugin detects an
+  incomplete runtime (missing venv or model weights) and runs the packaged
+  `setup.sh` / `setup.ps1` in the background, detached and non-blocking —
+  OpenCode startup is never delayed. A few minutes for the one-time ~300 MB
+  Kokoro download; progress lands in `setup.log` beside `plugin.log` in the
+  Sebas data directory.
+- **No restart when it finishes.** A completion watcher reloads the `voice` MCP
+  the moment the runtime is ready, so speech becomes available mid-session —
+  the relaunch picks up the installed venv interpreter automatically (Windows
+  included). The watcher keeps polling through slow installs (fast at first,
+  then once every ~45 s) instead of giving up early.
+- **Graceful "installing" state on Linux, macOS and Windows.** While the setup
+  runs, `speak` and `voice_status` answer `{"status": "installing", ...}` with
+  a clear `next_step` — never a traceback — and no half-armed daemon is ever
+  started. Before the venv exists the voice server starts with a system Python,
+  so the state is servable on all three operating systems from the first
+  second. Only past a two-hour bound does the watcher stop — and it logs then
+  that OpenCode must be restarted when the setup finishes.
+- **Parallel sessions share one setup.** A `setup.lock` in the data directory
+  (holding the installer's pid) makes concurrent OpenCode sessions share a
+  single install; stale locks are reclaimed automatically.
+- **The manual commands remain** as the offline/troubleshooting path, and both
+  installers now download to a `.part` file first, with `curl --fail` and a
+  minimum-size check before the rename, so a failed download or an HTTP error
+  page can never look complete. A torn venv (an interrupted creation) is now
+  detected and recreated instead of aborting the setup.
+
 ## 1.0.0 — 2026-09-27
 
 First public release of **Sebas**, the electronic butler for LLM-assisted work —

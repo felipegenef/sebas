@@ -102,6 +102,48 @@ KOKORO_DIR = MODELS / "kokoro"
 KOKORO_ONNX = KOKORO_DIR / "kokoro-v1.0.onnx"
 KOKORO_VOICES = KOKORO_DIR / "voices-v1.0.bin"
 
+
+# ------------------------------------------------------- runtime completeness
+def runtime_missing() -> list[str]:
+    """Pieces the setup installers create that are not in place yet (empty =
+    complete): the venv interpreter and the two Kokoro weight files. Same
+    rule the plugin's own first-run check uses, so 'installing' means the same
+    thing on every side. venv_python knows the per-platform venv layout."""
+    missing = []
+    if not venv_python(DATA).exists():
+        missing.append("venv")
+    if not KOKORO_ONNX.exists():
+        missing.append(KOKORO_ONNX.name)
+    if not KOKORO_VOICES.exists():
+        missing.append(KOKORO_VOICES.name)
+    return missing
+
+
+def installing_payload() -> dict | None:
+    """House-style payload while the first-run setup is still creating the
+    venv or downloading the weights; None when the runtime is complete.
+
+    This is the transient window between plugin load and finished install:
+    speak/voice_status (and the daemon, indirectly) answer with this clear
+    'not yet' payload instead of a traceback — and never start a daemon that
+    could not synthesize anyway. The plugin runs the setup automatically and
+    reloads the voice MCP when it finishes; nothing here is machine-specific."""
+    missing = runtime_missing()
+    if not missing:
+        return None
+    return {
+        "status": "installing",
+        "missing": missing,
+        "next_step": (
+            "The voice runtime is still being installed in the background "
+            "(~300 MB): the plugin runs the setup automatically on first load "
+            "and speech becomes available as soon as it finishes, WITHOUT a "
+            "restart. Progress is in setup.log inside the Sebas data dir. To "
+            "install by hand instead, run the voice setup (setup.sh on POSIX, "
+            "setup.ps1 on Windows) and restart OpenCode."
+        ),
+    }
+
 # ------------------------------------------------------------------ language
 LANGUAGES = {"en": "en-us", "en-us": "en-us", "pt": "pt-br", "pt-br": "pt-br"}
 DEFAULT_LANGUAGE = "en-us"
@@ -302,7 +344,7 @@ def status() -> dict:
         "language": get_language(),
         "voice": cfg.get("voice") or DEFAULT_VOICE.get(get_language()),
         "speed": cfg.get("speed"),
-        "model": "ok" if KOKORO_ONNX.exists() else "missing (re-run the plugin setup)",
+        "model": "ok" if KOKORO_ONNX.exists() else "missing (the plugin installs it automatically on first load; see setup.log)",
         "voices": available_voices(),
     }
 

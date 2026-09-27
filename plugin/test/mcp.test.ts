@@ -10,6 +10,7 @@ import {
   NOTIFY_ENV,
   VOICE_MCP_NAME,
   wireVoiceServer,
+  type TransformMemory,
   type VoiceWireInput,
 } from "../src/mcp"
 
@@ -382,5 +383,69 @@ describe("applyVoiceTransform — the replayable transform callback", () => {
       branch: "failed",
       reason: "set exploded",
     })
+  })
+})
+
+describe("applyVoiceTransform with transform memory (launch recipe refresh)", () => {
+  // The first-run runtime setup flips the Windows launch recipe mid-session:
+  // `python server.py` while the venv is missing, the venv interpreter once
+  // the install completes. Memory says the OLD registration is the plugin's
+  // own, so the refresh is a self-update — while a user's entry stays sacred.
+  const previous: MutableServerConfig = {
+    type: "local",
+    command: ["python", "server.py"],
+    cwd: "/somewhere/voice",
+    environment: { [NOTIFY_ENV]: "/somewhere/cards" },
+    protocol: "legacy",
+    codemode: true,
+  }
+  const refreshed: MutableServerConfig = {
+    type: "local",
+    command: ["/data/venv/Scripts/python.exe", "server.py"],
+    cwd: "/somewhere/voice",
+    environment: { [NOTIFY_ENV]: "/somewhere/cards" },
+    protocol: "legacy",
+    codemode: true,
+  }
+  const input: VoiceWireInput = {
+    launch: { command: ["/data/venv/Scripts/python.exe", "server.py"], cwd: "/somewhere/voice" },
+    notifyPath: "/somewhere/cards",
+    protocol: "legacy",
+    codemode: true,
+  }
+
+  test("our own earlier registration with the OLD recipe is refreshed, and memory follows", () => {
+    const editor = new FakeEditor()
+    editor.seed(VOICE_MCP_NAME, structuredClone(previous))
+    const memory: TransformMemory = { registered: structuredClone(previous) }
+
+    expect(applyVoiceTransform(editor, input, memory)).toEqual({ branch: "refreshed" })
+    expect(editor.calls).toEqual([`set:${VOICE_MCP_NAME}`])
+    expect(editor.get(VOICE_MCP_NAME)).toEqual(refreshed)
+    expect(memory.registered).toEqual(refreshed)
+  })
+
+  test("without memory the old recipe reads as a user entry (strict rule intact)", () => {
+    const editor = new FakeEditor()
+    editor.seed(VOICE_MCP_NAME, structuredClone(previous))
+
+    expect(applyVoiceTransform(editor, input)).toEqual({ branch: "skipped-user-entry" })
+    expect(editor.calls).toEqual([])
+  })
+
+  test("a user entry is still never touched, even with memory present", () => {
+    const editor = new FakeEditor()
+    const userEntry = {
+      type: "local" as const,
+      command: ["python", "/user/voice/server.py"],
+      cwd: "/user/voice",
+    }
+    editor.seed(VOICE_MCP_NAME, structuredClone(userEntry))
+    const memory: TransformMemory = { registered: structuredClone(previous) }
+
+    expect(applyVoiceTransform(editor, input, memory)).toEqual({ branch: "skipped-user-entry" })
+    expect(editor.calls).toEqual([])
+    expect(editor.get(VOICE_MCP_NAME)).toEqual(userEntry)
+    expect(memory.registered).toEqual(previous) // untouched by a skipped run
   })
 })

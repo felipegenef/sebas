@@ -1,6 +1,6 @@
 {
   "name": "@felipegenef/opencode-sebas",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Sebas, the electronic butler for LLM-assisted work: speaks your agents' messages through a local text-to-speech daemon, parks the messages that collide onto a system notification card with a single Listen button, and keeps one voice at a time. Ships the voice MCP, the butler persona and the notification cards as one OpenCode plugin.",
   "license": "MIT",
   "publishConfig": {

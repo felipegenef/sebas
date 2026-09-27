@@ -104,9 +104,24 @@ def handle(req: dict):
         except TypeError as e:
             payload = {"status": "invalid_arguments", "problem": str(e),
                        "next_step": f"Check the fields of {name} in tools/list."}
-        except Exception:
+        except ImportError as e:
+            # The stale-server window: this process started (usually with a
+            # system interpreter) before the voice runtime was ready, so the
+            # engine's modules are not importable here. House payload, never a
+            # traceback: the caller gets the cause and the way out.
             payload = {"status": "internal_error",
-                       "problem": traceback.format_exc(limit=3),
+                       "problem": ("the voice engine is not importable in this "
+                                   f"server process ({e.__class__.__name__}: {e})"),
+                       "next_step": ("This server is running with a system "
+                                     "interpreter, or it was started before the "
+                                     "voice runtime finished installing. Reload "
+                                     "the voice MCP — or restart OpenCode — so "
+                                     "the server runs the installed runtime, "
+                                     "then retry.")}
+        except Exception as e:
+            # House payload, never a traceback (repr mirrors permissions.py).
+            payload = {"status": "internal_error",
+                       "problem": repr(e),
                        "next_step": "Try again; if it persists, re-run the "
                                     "plugin setup and retry."}
         return _result(rid, {"content": [{"type": "text",

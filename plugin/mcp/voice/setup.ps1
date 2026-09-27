@@ -16,11 +16,13 @@ $ErrorActionPreference = "Stop"
 # <data home>/sebas (default ~/.local/share/sebas); a pre-1.0 legacy location
 # (<data home>/voz) is auto-detected and used as-is so an existing install
 # keeps its venv and identity — no user action needed.
-# An empty or whitespace-only XDG_DATA_HOME counts as unset.
+# An empty or whitespace-only XDG_DATA_HOME counts as unset, and a value with
+# surrounding whitespace is trimmed — the same .strip() the TS and Python
+# sides do. Existence is tested with Test-Path (any entry, like existsSync).
 if ([string]::IsNullOrWhiteSpace($env:XDG_DATA_HOME)) {
     $DataHome = Join-Path (Join-Path $HOME ".local") "share"
 } else {
-    $DataHome = $env:XDG_DATA_HOME
+    $DataHome = $env:XDG_DATA_HOME.Trim()
 }
 $Data = Join-Path $DataHome "sebas"
 if (-not (Test-Path $Data) -and (Test-Path (Join-Path $DataHome "voz"))) {
@@ -35,6 +37,11 @@ Write-Host "== voice/setup =="
 Write-Host "data: $Data"
 
 if (-not (Test-Path $VenvPy)) {
+    # Success is judged by the interpreter the runtime will actually use
+    # ($VenvPy), never by the directory: a torn venv (an interrupted creation
+    # leaves the directory without an interpreter) is removed and recreated,
+    # so this script always self-heals.
+    if (Test-Path $Venv) { Remove-Item -Recurse -Force $Venv }
     # Base interpreter: the py launcher at 3.13 then 3.12 (the versions
     # setup.sh prefers), plain python as the last resort. Each candidate is
     # tried by DOING the venv creation — `py -3.13` exits non-zero when that
@@ -79,7 +86,9 @@ foreach ($file in @("kokoro-v1.0.onnx", "voices-v1.0.bin")) {
     try {
         $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
         if ($null -ne $curl) {
-            & $curl.Source -sSL -o $partial "$KokoroBase/$file"
+            # -f: an HTTP error page must never be installed as model data
+            # (the .part suffix only covers transport failures).
+            & $curl.Source -sSLf -o $partial "$KokoroBase/$file"
             if ($LASTEXITCODE -ne 0) { throw "curl exited $LASTEXITCODE" }
         } else {
             Invoke-WebRequest -Uri "$KokoroBase/$file" -OutFile $partial -UseBasicParsing
@@ -87,7 +96,14 @@ foreach ($file in @("kokoro-v1.0.onnx", "voices-v1.0.bin")) {
     } catch {
         throw "download failed: $KokoroBase/$file ($($_.Exception.Message))"
     }
-    Move-Item -Force $partial $target
+    # Minimum-size check: a truncated or empty body must never be renamed into
+    # place, where every readiness check would then treat it as complete.
+    if ((Test-Path $partial) -and (Get-Item $partial).Length -ge 1024) {
+        Move-Item -Force $partial $target
+    } else {
+        Remove-Item -Force $partial -ErrorAction SilentlyContinue
+        throw "download of $file failed the minimum-size check (truncated or an error page)"
+    }
 }
 
 Write-Host ""
