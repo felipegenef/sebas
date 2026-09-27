@@ -12,10 +12,10 @@ collide, and keeps one voice at a time.
   while another is being spoken is parked, never auto-played. First-run setup
   downloads the model (~300 MB) into the user's data directory.
 - **Notification cards on Linux, macOS and Windows.** One card per parked
-  message: the full text and a single Listen button ("Ouvir mensagem" in
-  Brazilian Portuguese). Clicking plays the message in turn through the voice
-  daemon and closes the card; an untouched card auto-closes and is never
-  re-shown. Linux uses freedesktop notifications (CRITICAL urgency bypasses
+  message: the full text and a single Listen button (label localized per
+  language — "Listen" in English, "Ouvir mensagem" in Portuguese). Clicking
+  plays the message in turn through the voice daemon and closes the card; an
+  untouched card auto-closes and is never re-shown. Linux uses freedesktop notifications (CRITICAL urgency bypasses
   Do-Not-Disturb), macOS a terminal-notifier → herald chain (time-sensitive),
   Windows BurntToast → raw WinRT toasts (urgent scenario). Click-to-play never
   touches the browser or a shell.

@@ -12,8 +12,9 @@
 >
 > - **Speaks your agents' messages** through a local text-to-speech daemon —
 >   Kokoro (~80M parameters, Apache-2.0) on **CPU**, no GPU needed.
-> - **Parks colliding messages** onto a notification card: the full text plus one
->   Listen button ("Ouvir mensagem" in Brazilian Portuguese). Click it and the
+> - **Parks colliding messages** onto a notification card: the full text plus a
+>   single **Listen** button — the label follows your configured language
+>   ("Listen" in English, "Ouvir mensagem" in Portuguese). Click it and the
 >   message plays in turn, then the card closes and never re-appears.
 > - **One package installs everything** — the `voice` MCP (12 tools), the butler
 >   persona, the notification cards and the configuration. One line in
@@ -181,6 +182,12 @@ through its tools — or seeded once in the plugin options
 | **Form of address** — how you like to be called (a treatment such as "sir" or "doctor", or a complete form such as "Mr. Alex"), used verbatim and always cordial | language default greeting | `set_user_name` (`form_of_address`) |
 | Spoken language | English | `set_language` |
 | Voice and speed (0.5–2.0) | `bm_george` (English) / `pm_santa` (Portuguese) | `set_voice` (list first with `list_voices`) |
+
+Everything the user sees or hears follows that language: the card title and
+button, the spoken short notices, the spoken greeting and the form of address
+fallback. English and Brazilian Portuguese ship today (`notify/` and
+`voice/core.py` hold the string tables — adding a language means adding the
+dictionaries and a voice prefix).
 
 The 12 tools of the `voice` MCP:
 
