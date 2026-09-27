@@ -299,8 +299,10 @@ Two workflows run on GitHub-hosted runners:
   The Kokoro model is cached between runs, so the ~300 MB download happens
   once per OS instead of once per run.
 - **`release`** (tags `v*`, or manually as a rehearsal) — runs the same test
-  matrix as a gate, then publishes to npm with a repository `NPM_TOKEN`
-  secret. Manual runs publish nothing: they stop at `npm publish --dry-run`.
+  matrix as a release gate and stops at `npm publish --dry-run`. It publishes
+  nothing and stores no credentials: **no npm token lives on GitHub** —
+  publishing is done by the maintainer on their own machine
+  (`cd plugin && npm publish --access public`).
 
 The three-OS install above is what the [Install](#install) section describes;
 if it works there, it installs on the runner's real Windows and macOS too.

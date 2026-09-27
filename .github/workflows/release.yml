@@ -1,23 +1,15 @@
-# release.yml — publish @felipegenef/opencode-sebas to npm.
+# release.yml — release GATE for @felipegenef/opencode-sebas.
 #
-# WHY THIS EXISTS: local publishing is blocked by the account's 2FA challenge,
-# so the classic CI publish does it instead — standard actions/setup-node
-# registry-url pattern, authenticated only through a repository secret.
+# WHAT IT DOES: on a v* tag (or manual dispatch) it runs the full 3-OS test
+# matrix and a `npm publish --dry-run` rehearsal, proving a release WOULD
+# work. It publishes NOTHING.
 #
-# BEFORE THE FIRST RELEASE, two one-time things live in the REPO (never in
-# this file, never committed):
-#   1. NPM_TOKEN — a granular npm access token (or classic Automation token)
-#      with publish rights for the @felipegenef scope. Create it on npmjs.com
-#      → Access Tokens, then save it here: Settings → Secrets and variables →
-#      Actions → New repository secret, name NPM_TOKEN.
-#   2. A release tag. From a clean main:
-#        git tag v1.0.2 && git push --tags
-#      The tag must be v<the version in plugin/package.json> — the version
-#      guard below refuses anything else before publishing.
-#
-# Publishing happens ONLY on v* tags. workflow_dispatch (with a version input)
-# runs the same gate and a `npm publish --dry-run` rehearsal, publishing
-# nothing — it exists to prove a release WOULD work before the tag is cut.
+# POLICY (maintainer decision): NO npm token is stored on GitHub — not in
+# this file, not in repository secrets. Publishing is done by the maintainer,
+# on their own machine, with their own npm auth:
+#     cd plugin && npm publish --access public
+# The version guard below still refuses a tag that does not match
+# plugin/package.json, so the tag remains the release record.
 name: release
 
 on:
@@ -92,18 +84,7 @@ jobs:
           npm ci || bun install --frozen-lockfile
           bun run build
 
-      - name: Publish (tags only)
-        if: github.ref_type == 'tag'
-        shell: bash
-        working-directory: plugin
-        env:
-          # The token never appears in the repo or in logs; it exists only as
-          # the NPM_TOKEN repository secret.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
-
-      - name: Rehearsal only (workflow_dispatch publishes nothing)
-        if: github.ref_type != 'tag'
+      - name: Publish rehearsal (never publishes)
         shell: bash
         working-directory: plugin
         run: npm publish --dry-run --access public
