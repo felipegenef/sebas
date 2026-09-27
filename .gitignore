@@ -1,0 +1,18 @@
+# Python dev artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node build output and dependencies (re-installed / re-built per machine)
+plugin/node_modules/
+plugin/dist/
+
+# Local agent/session workspace
+.agents/
+
+# Logs and OS junk
+*.log
+.DS_Store
+
+# Publish credentials — never commit tokens
+.npmrc
