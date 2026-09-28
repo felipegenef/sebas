@@ -36,7 +36,7 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 # Directory name of a pre-1.0 install. Referenced ONLY by the auto-detection
 # below (and by the voice-profile filename rule): see resolve_data_dir.
@@ -85,16 +85,25 @@ def _is_macos() -> bool:
     return sys.platform == "darwin"
 
 
-def venv_python(data: Path) -> Path:
+def venv_python(data):
     """Interpreter of the venv the voice setup creates (setup.sh / setup.ps1).
 
     Windows venvs keep it at `venv/Scripts/python.exe`, POSIX venvs at
     `venv/bin/python` — this is the ONLY place that knows the difference, so
     a new platform is one edit here (the daemon starter and the quick-test
-    hints go through this function, never through a hardcoded path)."""
-    if _is_windows():
-        return data / "venv" / "Scripts" / "python.exe"
-    return data / "venv" / "bin" / "python"
+    hints go through this function, never through a hardcoded path). The path
+    is built in the CHOSEN platform's pure flavour (PurePosixPath /
+    PureWindowsPath — the same rule scripts/rpc_probe.py venv_python mirrors),
+    never the host pathlib: on the real host the flavour matches the host and
+    the string is byte-identical to a host-Path build, while a test simulating
+    the other platform gets that platform's separators from any host. The
+    result is a PURE path (no filesystem methods): filesystem checks wrap it,
+    e.g. `Path(str(...)).exists()`."""
+    windows = _is_windows()
+    base = PureWindowsPath(str(data)) if windows else PurePosixPath(str(data))
+    if windows:
+        return base / "venv" / "Scripts" / "python.exe"
+    return base / "venv" / "bin" / "python"
 
 
 DATA, DATA_LEGACY = resolve_data_dir()
@@ -115,7 +124,7 @@ def runtime_missing() -> list[str]:
     rule the plugin's own first-run check uses, so 'installing' means the same
     thing on every side. venv_python knows the per-platform venv layout."""
     missing = []
-    if not venv_python(DATA).exists():
+    if not Path(str(venv_python(DATA))).exists():   # pure path: host wrap
         missing.append("venv")
     if not KOKORO_ONNX.exists():
         missing.append(KOKORO_ONNX.name)

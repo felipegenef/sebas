@@ -4,16 +4,22 @@ Two platform rules live in voice/core.py and both must hold without a Windows
 box at hand: where the venv interpreter lives (venv_python — Windows and POSIX
 layouts) and the Windows playback chain
 (winsound first, PowerShell Media.SoundPlayer fallback). The platform is
-mocked (os.name / sys.platform) and every player is a stand-in — no test ever
-plays audio, opens a speaker or starts a real shell. The POSIX players are
-pinned too, so a Windows edit can never break Linux playback, and the macOS
-player (afplay, built into macOS) is pinned the same way: first on darwin,
-never on Linux. The daemon transport guard is exercised the same way the
-notify adapters guard it: the "no AF_UNIX" payload only when NEITHER
+pinned through core's own predicate seams (_is_windows / _is_macos) and every
+player is a stand-in — no test ever plays audio, opens a speaker or starts a
+real shell. Mocking sys.platform / os.name alone can NOT flip the platform
+from any host: os.name stays the host's and _is_windows' OR rule then answers
+'Windows' whatever sys.platform says (the bug the windows-latest CI leg
+caught). Path expectations go through the matching PURE path flavour
+(PurePosixPath / PureWindowsPath), never the host pathlib. The POSIX players
+are pinned too, so a Windows edit can never break Linux playback, and the
+macOS player (afplay, built into macOS) is pinned the same way: first on
+darwin, never on Linux. The daemon transport guard is exercised the same way
+the notify adapters guard it: the "no AF_UNIX" payload only when NEITHER
 transport works, the loopback TCP + token fallback where AF_UNIX is missing.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import subprocess
@@ -21,7 +27,7 @@ import sys
 import tempfile
 import types
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin"))
@@ -39,6 +45,18 @@ def _voice_modules():
         sys.path.insert(0, str(root))
     from voice import core, daemon
     return core, daemon
+
+
+@contextlib.contextmanager
+def _on_platform(core, *, windows: bool, macos: bool):
+    """Pin the simulated platform through core's OWN predicate seams. The
+    seams are the platform input of every rule under test; patching
+    sys.platform / os.name instead leaks the host's os.name into _is_windows'
+    OR rule and silently simulates Windows from a POSIX test (exactly how the
+    windows-latest CI leg broke)."""
+    with mock.patch.object(core, "_is_windows", return_value=windows), \
+         mock.patch.object(core, "_is_macos", return_value=macos):
+        yield
 
 
 class FakeWinsound(types.ModuleType):
@@ -61,7 +79,13 @@ class FakeWinsound(types.ModuleType):
 
 
 class VenvPythonTest(unittest.TestCase):
-    """venv_python: the ONE place that knows the venv layout per platform."""
+    """venv_python: the ONE place that knows the venv layout per platform.
+
+    Expectations are built in the matching PURE path flavour from a plain
+    string input — never the host pathlib, whose flavour differs on the
+    Windows runners. The two Windows tests keep their os.name / sys.platform
+    mocks ON PURPOSE: they pin the two legs of the _is_windows detection
+    rule itself. The POSIX test pins the posix branch through the seam."""
 
     def setUp(self):
         self.core, _ = _voice_modules()
@@ -69,21 +93,19 @@ class VenvPythonTest(unittest.TestCase):
             self.skipTest("set SEBAS_MCP_ROOT to the voice MCP checkout")
 
     def test_posix_venv_interpreter(self):
-        data = Path("/data/sebas")
-        self.assertEqual(self.core.venv_python(data),
-                         data / "venv" / "bin" / "python")
+        with mock.patch.object(self.core, "_is_windows", return_value=False):
+            self.assertEqual(self.core.venv_python("/data/sebas"),
+                             PurePosixPath("/data/sebas") / "venv" / "bin" / "python")
 
     def test_windows_venv_interpreter_via_sys_platform(self):
-        data = Path("/data/sebas")
-        expected = data / "venv" / "Scripts" / "python.exe"
         with mock.patch("sys.platform", "win32"):
-            self.assertEqual(self.core.venv_python(data), expected)
+            self.assertEqual(self.core.venv_python("/data/sebas"),
+                             PureWindowsPath("/data/sebas") / "venv" / "Scripts" / "python.exe")
 
     def test_windows_venv_interpreter_via_os_name(self):
-        data = Path("/data/sebas")
-        expected = data / "venv" / "Scripts" / "python.exe"
         with mock.patch.object(os, "name", "nt"):
-            self.assertEqual(self.core.venv_python(data), expected)
+            self.assertEqual(self.core.venv_python("/data/sebas"),
+                             PureWindowsPath("/data/sebas") / "venv" / "Scripts" / "python.exe")
 
 
 class PlayFileWindowsTest(unittest.TestCase):
@@ -99,7 +121,7 @@ class PlayFileWindowsTest(unittest.TestCase):
         daemon's turn lock needs play_file to return only when the sound
         ENDED, or two voices could overlap."""
         fake = FakeWinsound()
-        with mock.patch("sys.platform", "win32"), \
+        with _on_platform(self.core, windows=True, macos=False), \
              mock.patch.dict(sys.modules, {"winsound": fake}), \
              mock.patch.object(subprocess, "run") as run:
             ok = self.core.play_file("/data/outputs/speak_1.wav")
@@ -115,7 +137,7 @@ class PlayFileWindowsTest(unittest.TestCase):
         argv-passed to powershell — never a shell, never unquoted."""
         fake = FakeWinsound(fail=True)
         path = r"C:\Users\o'brien\voice message.wav"
-        with mock.patch("sys.platform", "win32"), \
+        with _on_platform(self.core, windows=True, macos=False), \
              mock.patch.dict(sys.modules, {"winsound": fake}), \
              mock.patch.object(subprocess, "run") as run:
             run.return_value = mock.Mock(returncode=0)
@@ -132,7 +154,7 @@ class PlayFileWindowsTest(unittest.TestCase):
         self.assertFalse(run.call_args.kwargs.get("shell", False))
 
     def test_missing_winsound_module_still_reaches_powershell(self):
-        with mock.patch("sys.platform", "win32"), \
+        with _on_platform(self.core, windows=True, macos=False), \
              mock.patch.dict(sys.modules, {"winsound": None}), \
              mock.patch.object(subprocess, "run") as run:
             run.return_value = mock.Mock(returncode=0)
@@ -145,7 +167,7 @@ class PlayFileWindowsTest(unittest.TestCase):
         exactly as they are, and the answer is False when none works."""
         fake = FakeWinsound(fail=True)
         path = "/data/outputs/speak_1.wav"
-        with mock.patch("sys.platform", "win32"), \
+        with _on_platform(self.core, windows=True, macos=False), \
              mock.patch.dict(sys.modules, {"winsound": fake}), \
              mock.patch.object(subprocess, "run", side_effect=OSError) as run:
             ok = self.core.play_file(path)
@@ -170,7 +192,7 @@ class PlayFilePosixTest(unittest.TestCase):
 
     def test_pw_play_first_then_aplay_then_ffplay(self):
         path = "/data/outputs/speak_1.wav"
-        with mock.patch("sys.platform", "linux"), \
+        with _on_platform(self.core, windows=False, macos=False), \
              mock.patch.object(subprocess, "run", side_effect=OSError) as run:
             ok = self.core.play_file(path)
         self.assertFalse(ok)
@@ -182,7 +204,7 @@ class PlayFilePosixTest(unittest.TestCase):
 
     def test_first_working_player_wins(self):
         path = "/data/outputs/speak_1.wav"
-        with mock.patch("sys.platform", "linux"), \
+        with _on_platform(self.core, windows=False, macos=False), \
              mock.patch.object(subprocess, "run") as run:
             run.side_effect = [OSError, mock.Mock(returncode=0)]
             ok = self.core.play_file(path)
@@ -204,7 +226,7 @@ class PlayFileMacOSTest(unittest.TestCase):
         """afplay is the built-in macOS player — it runs FIRST there and,
         when it plays, nothing else is tried."""
         path = "/data/outputs/speak_1.wav"
-        with mock.patch("sys.platform", "darwin"), \
+        with _on_platform(self.core, windows=False, macos=True), \
              mock.patch.object(subprocess, "run") as run:
             run.return_value = mock.Mock(returncode=0)
             ok = self.core.play_file(path)
@@ -216,7 +238,7 @@ class PlayFileMacOSTest(unittest.TestCase):
         """A failing afplay moves on to the next player in the chain
         (pw-play) — one at a time, first success wins."""
         path = "/data/outputs/speak_1.wav"
-        with mock.patch("sys.platform", "darwin"), \
+        with _on_platform(self.core, windows=False, macos=True), \
              mock.patch.object(subprocess, "run") as run:
             run.side_effect = [OSError, mock.Mock(returncode=0)]
             ok = self.core.play_file(path)
@@ -230,7 +252,7 @@ class PlayFileMacOSTest(unittest.TestCase):
         Linux stays exactly pw-play -> aplay -> ffplay (PlayFilePosixTest):
         afplay never runs there."""
         path = "/data/outputs/speak_1.wav"
-        with mock.patch("sys.platform", "darwin"), \
+        with _on_platform(self.core, windows=False, macos=True), \
              mock.patch.object(subprocess, "run", side_effect=OSError) as run:
             ok = self.core.play_file(path)
         self.assertFalse(ok)

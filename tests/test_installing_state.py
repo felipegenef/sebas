@@ -9,6 +9,7 @@ SEBAS_MCP_ROOT (skipped when it is not set).
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -33,11 +34,21 @@ class _VoiceCase(unittest.TestCase):
         self.core = core
         self.engine = engine
         # The runtime layout every check reads: a throwaway dir, never the
-        # machine's real one. venv_python knows the per-platform layout.
+        # machine's real one. venv_python knows the per-platform layout (and
+        # returns a PURE path — wrap it for real filesystem work). A
+        # Windows-flavour wrap is a CWD-RELATIVE name on a POSIX host, so the
+        # fixture runs with the CWD inside the throwaway dir: the wrapped
+        # names materialize there — where runtime_missing's identical wrap
+        # finds them — and never in the repository CWD (see
+        # test_no_cwd_artifacts.py). The CWD is restored BEFORE the throwaway
+        # dir is removed (addCleanup runs LIFO).
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.data = Path(tmp.name)
-        self.venv_py = core.venv_python(self.data)
+        outer_cwd = os.getcwd()
+        os.chdir(self.data)
+        self.addCleanup(os.chdir, outer_cwd)
+        self.venv_py = Path(str(core.venv_python(self.data)))
         self.onnx = self.data / "models" / "kokoro" / "kokoro-v1.0.onnx"
         self.voices = self.data / "models" / "kokoro" / "voices-v1.0.bin"
         for patcher in (

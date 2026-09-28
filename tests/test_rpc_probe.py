@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
 from _support import ROOT, mcp_root
@@ -254,7 +254,11 @@ class CommandConstructionTest(unittest.TestCase):
 
 class ProbeSpawnsTheResolvedCommandTest(unittest.TestCase):
     """Mocked Popen through main(): what resolve_server_command builds is
-    EXACTLY what gets spawned, on both platform flavours."""
+    EXACTLY what gets spawned, on both platform flavours. The flavour pins go
+    through the same PURE path flavour the platform uses (PurePosixPath /
+    PureWindowsPath) built from the resolved inputs — never the host pathlib,
+    whose flavour differs on the Windows runners (where Path() is WindowsPath
+    and even a temp dir string carries backslashes)."""
 
     def _spawned_argv(self, windows: bool):
         with tempfile.TemporaryDirectory() as tmp:
@@ -277,6 +281,8 @@ class ProbeSpawnsTheResolvedCommandTest(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()), \
                  contextlib.redirect_stderr(io.StringIO()):
                 rc = rpc_probe.main()
+            resolved = (str(data_home.expanduser().resolve()),
+                        str(voice_dir.expanduser().resolve()))
             with mock.patch.object(rpc_probe, "_exists", return_value=True):
                 expected = rpc_probe.resolve_server_command(
                     data_home.expanduser().resolve(),
@@ -285,19 +291,27 @@ class ProbeSpawnsTheResolvedCommandTest(unittest.TestCase):
         self.assertEqual(rc, 1)          # the stub answers nothing: fails loud
         popen.assert_called_once()
         self.assertEqual(popen.call_args.args[0], expected)
-        return expected
+        return expected, resolved
 
     def test_windows_spawn_is_venv_python_exe(self):
-        argv = self._spawned_argv(windows=True)
+        argv, (data_home, voice_dir) = self._spawned_argv(windows=True)
         self.assertIn("\\sebas\\venv\\Scripts\\python.exe", argv[0])
         self.assertNotIn("/", argv[0])
         self.assertTrue(argv[1].endswith("\\server.py"))
+        self.assertEqual(                    # flavour-exact, byte for byte
+            argv[0],
+            str(PureWindowsPath(data_home) / "sebas" / "venv"
+                / "Scripts" / "python.exe"))
+        self.assertEqual(argv[1], str(PureWindowsPath(voice_dir) / "server.py"))
 
     def test_posix_spawn_is_venv_bin_python(self):
-        argv = self._spawned_argv(windows=False)
+        argv, (data_home, voice_dir) = self._spawned_argv(windows=False)
         self.assertIn("/sebas/venv/bin/python", argv[0])
-        self.assertNotIn("\\", argv[0])
         self.assertTrue(argv[1].endswith("/server.py"))
+        self.assertEqual(                    # flavour-exact, byte for byte
+            argv[0],
+            str(PurePosixPath(data_home) / "sebas" / "venv" / "bin" / "python"))
+        self.assertEqual(argv[1], str(PurePosixPath(voice_dir) / "server.py"))
 
 
 class CommandLineContractTest(unittest.TestCase):

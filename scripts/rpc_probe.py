@@ -80,15 +80,23 @@ def _requests() -> list[dict]:
     ]
 
 
-def _data_dir(data_home: Path) -> Path:
-    """The data dir the server will resolve (mirrors voice/core.py): new
-    installs use <data home>/sebas, a pre-1.0 legacy <data home>/voz is used
-    when only it exists."""
-    current = data_home / "sebas"
-    legacy = data_home / "voz"
+def _data_dir_name(data_home) -> str:
+    """Directory NAME under the data home that holds the runtime (mirrors
+    voice/core.py resolve_data_dir): 'sebas', or the pre-1.0 legacy 'voz' when
+    only it exists. The decision uses REAL host filesystem checks (the probe
+    runs on the real host), so only the NAME comes back — callers build the
+    path in whatever flavour the platform needs."""
+    current = Path(str(data_home)) / "sebas"
+    legacy = Path(str(data_home)) / "voz"
     if not current.exists() and legacy.exists():
-        return legacy
-    return current
+        return "voz"
+    return "sebas"
+
+
+def _data_dir(data_home: Path) -> Path:
+    """The data dir the server will resolve (host flavour: used by main() for
+    the real filesystem checks that guard against a live daemon endpoint)."""
+    return data_home / _data_dir_name(data_home)
 
 
 def _is_windows() -> bool:
@@ -125,11 +133,17 @@ def resolve_server_command(data_home, voice_dir, windows: bool,
     the platform's own separators, never a `-c` wrapper and never a path a CI
     step hand-builds (that is exactly how the Windows probe once lost the
     'sebas' segment and could not start the server). `data_home` and
-    `voice_dir` arrive already absolute (main resolves them)."""
-    data = _data_dir(Path(str(data_home)))
+    `voice_dir` arrive already absolute (main resolves them).
+
+    Every argv element is built in the CHOSEN platform's pure path flavour
+    (PurePosixPath / PureWindowsPath), never the host pathlib: on the real
+    host the flavour matches the host and the strings are byte-identical to a
+    host-Path build — but a test (or a tool) simulating the other platform
+    gets that platform's separators even from a foreign host."""
+    joiner = PureWindowsPath if windows else PurePosixPath
+    data = joiner(str(data_home)) / _data_dir_name(data_home)
     interpreter = venv_python(data, windows)
     python = str(interpreter) if _exists(interpreter) else system_python
-    joiner = PureWindowsPath if windows else PurePosixPath
     return [python, str(joiner(str(voice_dir)) / "server.py")]
 
 

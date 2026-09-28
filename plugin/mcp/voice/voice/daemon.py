@@ -115,9 +115,10 @@ def ensure_running() -> None:
     core.DATA.mkdir(parents=True, exist_ok=True)
     me = Path(__file__).resolve()
     # Always prefer the project venv (core.venv_python knows the per-platform
-    # layout): any other interpreter may lack deps.
+    # layout): any other interpreter may lack deps. venv_python returns a PURE
+    # path (platform flavour): wrap it in the host Path for the fs check.
     venv_py = core.venv_python(core.DATA)
-    py = str(venv_py) if venv_py.exists() else sys.executable
+    py = str(venv_py) if Path(str(venv_py)).exists() else sys.executable
     # flock-style guard via atomic O_EXCL lock file, released by the starter.
     for _ in range(int(START_TIMEOUT / 0.5)):
         try:

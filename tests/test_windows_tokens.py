@@ -265,6 +265,9 @@ class TokenStoreTest(unittest.TestCase):
         self.assertLessEqual(len(self._files()), windows.TOKEN_MAX_COUNT)
 
     def test_token_files_are_private(self):
+        if os.name == "nt":
+            self.skipTest("POSIX file modes only (Windows chmod carries just "
+                          "the read-only bit)")
         token = windows._mint_token("private")
         mode = os.stat(Path(self._tmp.name) / f"{token}.json").st_mode & 0o777
         self.assertEqual(mode, 0o600)
@@ -284,6 +287,9 @@ class TokenStoreTest(unittest.TestCase):
         self.assertFalse((store / f"{token}.json").exists())   # token purged
 
     def test_token_dir_is_private(self):
+        if os.name == "nt":
+            self.skipTest("POSIX file modes only (Windows chmod carries just "
+                          "the read-only bit)")
         store = Path(self._tmp.name) / "store"
         with mock.patch.dict(os.environ, {"SEBAS_CARD_TOKEN_DIR": str(store)}):
             directory = windows._ensure_token_dir()
@@ -294,6 +300,9 @@ class TokenStoreTest(unittest.TestCase):
         """Shared-TEMP pre-creation: a store owned by ANOTHER user is never
         used — no token is minted, nothing is written there, and the card
         refuses with a precise problem instead of losing clicks."""
+        if not hasattr(os, "getuid"):
+            self.skipTest("POSIX uid ownership only (Windows has no "
+                          "st_uid/getuid; NTFS ACLs are the boundary there)")
         store = Path(self._tmp.name) / "store"
         store.mkdir()                              # pre-created "by them"
         with mock.patch.dict(os.environ, {"SEBAS_CARD_TOKEN_DIR": str(store)}):

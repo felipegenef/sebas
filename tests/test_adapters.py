@@ -492,6 +492,18 @@ class WindowsClickFlowTests(unittest.TestCase):
 
 
 class WindowsShowCardTests(unittest.TestCase):
+    def setUp(self):
+        # show_card mints a capability token even with everything downstream
+        # mocked. The store must land in a throwaway dir: the default falls
+        # back to the OS temp dir, which can resolve as relatively as the CWD
+        # itself (see test_no_cwd_artifacts.py).
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.dict(os.environ,
+                                  {"SEBAS_CARD_TOKEN_DIR": self._tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_shows_and_registers_handler(self):
         with mock.patch.object(windows, "_ensure_protocol_handler",
                                return_value={"status": "ok"}) as reg, \
