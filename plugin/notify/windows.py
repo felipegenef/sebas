@@ -313,7 +313,16 @@ def _consume_token(token: str) -> tuple[str | None, str]:
 
     The claim is atomic (rename to a private name): only one caller can win a
     token, so a replayed URI finds nothing. The claimed file is always deleted,
-    and an expired token is rejected even when the file is still around."""
+    and an expired token is rejected even when the file is still around.
+
+    Reasons classify the failure MODE, never the OS: a click on a token that
+    is already consumed (or never there) answers "unknown" on every platform
+    — including the Windows claim races, where the loser surfaces as a rename
+    error of the OS's choosing (the source is gone) or as the just-claimed
+    file being moved away before it is read (MoveFileEx renames the opened
+    file, not the name). "malformed" is only ever a token file that EXISTS
+    but is not a valid record; store-level failures (permissions, I/O)
+    answer "store" and get their own payload."""
     if not _TOKEN_RE.match(token or ""):
         return None, "malformed"
     try:
@@ -323,9 +332,15 @@ def _consume_token(token: str) -> tuple[str | None, str]:
     path = directory / f"{token}.json"
     claim = directory / f".claim-{secrets.token_hex(8)}.json"
     try:
-        os.rename(path, claim)                     # atomic claim; loser gets
-    except OSError:                                # FileNotFoundError
+        os.rename(path, claim)                     # atomic claim; the loser
+    except FileNotFoundError:                      # of a race finds nothing
         return None, "unknown"
+    except OSError:
+        # Windows also reports the gone source as a permission/other error
+        # and refuses an existing claim name (POSIX replaces silently): the
+        # token file itself separates consumed ("unknown") from a store
+        # problem ("store"), whatever error the OS produced.
+        return None, ("store" if path.exists() else "unknown")
     try:
         if claim.stat().st_size > TOKEN_MAX_TEXT_BYTES + 1024:
             return None, "malformed"
@@ -337,8 +352,15 @@ def _consume_token(token: str) -> tuple[str | None, str]:
         if time.time() - created > TOKEN_TTL_SECONDS:
             return None, "expired"
         return text, "ok"
-    except (OSError, ValueError, KeyError, TypeError):
-        return None, "malformed"
+    except FileNotFoundError:
+        # Claimed but gone before the read: a racing click moved or consumed
+        # it under us — the same "already consumed" answer on every OS, and
+        # never "malformed".
+        return None, "unknown"
+    except (ValueError, KeyError, TypeError):
+        return None, "malformed"                   # a real parse/format failure
+    except OSError:
+        return None, ("store" if claim.exists() else "unknown")
     finally:
         try:
             claim.unlink()
@@ -543,6 +565,14 @@ def _play_from_uri(uri: str) -> dict:
                     "next_step": "Dry run: nothing was sent to the voice daemon."}
         text, reason = _consume_token(token)
         if text is None:
+            if reason == "store":
+                return {"status": "error",
+                        "problem": "the card token store could not be read",
+                        "next_step": "Nothing was played: the card token "
+                                     "store (a per-user temp directory) could "
+                                     "not be accessed. Check its permissions "
+                                     "and the disk, then ask the agent to "
+                                     "show a new card."}
             problem = {"unknown": "unknown card token",
                        "expired": "the card token has expired",
                        "malformed": "malformed card token"}[reason]

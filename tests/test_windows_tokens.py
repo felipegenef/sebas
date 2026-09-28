@@ -162,6 +162,64 @@ class TokenStoreTest(unittest.TestCase):
         self.assertIn("unknown", loser["problem"])
         self.assertEqual(self._files(), [])           # consumed = deleted
 
+    def test_race_loser_is_unknown_never_malformed_on_windows_rename(self):
+        """A race loser is "unknown", NEVER "malformed" — with the Windows
+        claim-race rename semantics (the windows-latest failure) simulated:
+        MoveFileEx renames the file it OPENED, not the name it was looked up
+        under, so the losing click's claim can land on the winner's in-flight
+        .claim-*.json and move it away before the winner reads it. Whatever
+        the OS does to a click whose token was already consumed, the answer
+        is "unknown" on every platform; "malformed" is reserved for a token
+        file that exists but is not a valid record."""
+        token = windows._mint_token("play me once")
+        real_rename = os.rename
+        lock = threading.Lock()
+        calls = []
+        claimed = threading.Event()
+        stolen = threading.Event()
+
+        def windows_rename(src, dst):
+            with lock:
+                calls.append(None)
+                first = len(calls) == 1
+            if first:
+                real_rename(src, dst)       # the winning claim
+                claimed.set()
+                stolen.wait(10)             # the move lands before the winner
+                return                      # reads — the windows-latest window
+            claimed.wait(10)                # the claim must exist first
+            names = [n for n in os.listdir(self._tmp.name)
+                     if n.startswith(".claim-")]
+            real_rename(os.path.join(self._tmp.name, names[0]), dst)  # steal
+            stolen.set()
+
+        gate = threading.Barrier(2)
+        results = []
+        results_lock = threading.Lock()
+
+        def click():
+            gate.wait(5)
+            result = windows._play_from_uri(windows.card_uri(token))
+            with results_lock:
+                results.append(result)
+
+        with mock.patch.object(windows.os, "rename", windows_rename), \
+             mock.patch.object(windows, "_send_play_request",
+                               return_value={"status": "ok"}) as send:
+            threads = [threading.Thread(target=click, daemon=True)
+                       for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(10)
+
+        send.assert_called_once_with("play me once")   # exactly one plays
+        self.assertEqual(len(results), 2)
+        loser = next(r for r in results if r["status"] == "error")
+        self.assertIn("unknown", loser["problem"])     # consumed = unknown
+        self.assertNotIn("malformed", loser["problem"])  # never "malformed"
+        self.assertEqual(self._files(), [])            # consumed = deleted
+
     def test_text_never_travels_in_the_uri(self):
         text = 'secret "message" with `backticks` & %vars% and spaces'
         uri = windows.card_uri(windows._mint_token(text))
