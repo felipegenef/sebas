@@ -50,6 +50,14 @@ pip install -q -U pip wheel
 echo "installing kokoro-onnx + utilities (CPU only, ~300 MB)..."
 pip install -q kokoro-onnx soundfile numpy
 
+# Best-effort PyGObject for the notification cards. TOLERANT on purpose:
+# on most distros the system python already provides gi (python3-gi), and
+# building PyGObject needs the girepository headers we do not want to
+# require. Neither is a hard need — when the venv has no gi the card
+# launcher falls back to the system interpreter (see notify/linux.py) — so
+# a failure here must never fail the install.
+pip install -q PyGObject || true
+
 echo "downloading Kokoro weights..."
 mkdir -p "$MODELS/kokoro"
 KOKORO_BASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"

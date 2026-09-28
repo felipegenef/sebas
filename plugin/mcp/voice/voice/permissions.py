@@ -91,6 +91,8 @@ WIN_TOAST_SWITCH = ("Software\\Microsoft\\Windows\\CurrentVersion\\PushNotificat
 DIAGNOSE_AUTHORIZED = 0       # terminal-notifier -diagnose exit codes
 DIAGNOSE_NOT_AUTHORIZED = 3
 PROBE_TIMEOUT = 8.0
+GI_FALLBACK_FIX = ("the system python3 provides gi; the fallback launcher "
+                   "covers it")
 
 
 # --------------------------------------------------------------------- seams
@@ -212,7 +214,9 @@ def _cards() -> dict:
 def _gi_notify_available() -> bool:
     """python3-gi + the Notify typelib (libnotify) — the same import
     notify/linux.py performs to show a card. Importing opens no D-Bus
-    connection and shows nothing."""
+    connection and shows nothing. Missing here is NOT fatal: the venv this
+    runs in never carries distro python3-gi, and notify/linux.py then shows
+    the card through the system interpreter (GI_FALLBACK_FIX)."""
     try:
         import gi
         gi.require_version("Notify", "0.7")
@@ -225,9 +229,13 @@ def _gi_notify_available() -> bool:
 # ----------------------------------------------------------------- linux
 def _linux_backend() -> dict:
     gi = _gi_notify_available()
+    system_python3 = _has("python3")     # the fallback launcher's interpreter
     gdbus = _has("gdbus")
     if gi:
         name = "freedesktop (org.freedesktop.Notifications) via python3-gi + libnotify"
+    elif system_python3:
+        name = ("freedesktop (org.freedesktop.Notifications) via python3-gi + "
+                "libnotify on the system python3 (fallback launcher)")
     elif gdbus:
         name = "freedesktop (org.freedesktop.Notifications) via gdbus"
     else:
@@ -235,14 +243,20 @@ def _linux_backend() -> dict:
     detail = []
     detail.append("python3-gi + Notify (libnotify): " +
                   ("available" if gi else "missing"))
+    if not gi:
+        detail.append(GI_FALLBACK_FIX if system_python3 else
+                      "and no system python3 on PATH for the fallback "
+                      "launcher either: install python3-gi and the Notify "
+                      "typelib (libnotify) in the system python3")
     detail.append("gdbus fallback: " + ("available" if gdbus else "missing"))
-    if not (gi or gdbus):
+    if not (gi or system_python3 or gdbus):
         detail.append("no way to talk to the notification service is installed")
     detail.append("a notification daemon on the session bus is also required "
                   "and is not probed here")
-    return {"name": name, "available": bool(gi or gdbus),
+    return {"name": name, "available": bool(gi or system_python3 or gdbus),
             "detail": "; ".join(detail),
-            "python_gi_notify": gi, "gdbus": gdbus}
+            "python_gi_notify": gi, "system_python3": system_python3,
+            "gdbus": gdbus}
 
 
 def _linux_permission() -> dict:
@@ -443,8 +457,9 @@ def _next_step(report: dict) -> str:
     cards = report.get("cards", {})
     if not report.get("backend", {}).get("available"):
         return ("No notification backend is available, so no card can appear: "
-                "install the backend of your OS (linux: python3-gi + libnotify; "
-                "macOS: terminal-notifier or herald; windows: PowerShell) or "
+                "install the backend of your OS (linux: python3-gi + libnotify "
+                f"({GI_FALLBACK_FIX}); macOS: terminal-notifier or herald; "
+                "windows: PowerShell) or "
                 "keep the spoken-notice flow. Run notification_status again "
                 "afterwards.")
     if permission.get("state") == "denied":

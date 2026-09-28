@@ -21,7 +21,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import {
   acquireSetupLock,
   ensureVoiceRuntime,
@@ -73,6 +73,23 @@ function makeVoiceDir(root: string, platform: NodeJS.Platform): string {
   touch(join(voiceDir, platform === "win32" ? "setup.ps1" : "setup.sh"))
   touch(join(voiceDir, platform === "win32" ? "setup.sh" : "setup.ps1"))
   return voiceDir
+}
+
+/**
+ * The "no group/other bits" (0600) contract is POSIX-only: Windows chmod
+ * carries just the read-only bit, so `mode` cannot express it there (the
+ * Python suite skips the same way — "POSIX file modes only (Windows chmod
+ * carries just the read-only bit)"). On win32 the file must exist as a
+ * regular file (statSync throws when it does not); on POSIX the mode is
+ * pinned exactly. Never weaker on POSIX.
+ */
+function expectPrivateFile(path: string): void {
+  const stat = statSync(path)
+  if (process.platform === "win32") {
+    expect(stat.isFile()).toBe(true)
+    return
+  }
+  expect(stat.mode & 0o077).toBe(0)
 }
 
 interface SpawnCall {
@@ -271,7 +288,10 @@ describe("installer command per platform", () => {
 
   test("findPowerShell scans every PATH entry and falls back to powershell", () => {
     const exists = (path: string): boolean => path === join("d", "pwsh")
-    expect(findPowerShell({ env: { PATH: ["a", "b", "d"].join(":") }, exists })).toBe("pwsh")
+    // PATH is built with the platform delimiter — the exact one findPowerShell
+    // splits by — so the scan contract is pinned on win32 (";") as on POSIX (":").
+    expect(findPowerShell({ env: { PATH: ["a", "b", "d"].join(delimiter) }, exists })).toBe("pwsh")
+    expect(findPowerShell({ env: { PATH: ["a", "b", "c"].join(delimiter) }, exists })).toBe("powershell")
     expect(findPowerShell({ env: { PATH: "" }, exists })).toBe("powershell")
   })
 
@@ -840,7 +860,7 @@ describe("symlink hardening and file modes", () => {
       pid: 111,
     })
     for (const name of [RUNTIME_LOCK_FILE, RUNTIME_LOG_FILE]) {
-      expect(statSync(join(dataDir, name)).mode & 0o077).toBe(0)
+      expectPrivateFile(join(dataDir, name))
     }
   })
 
@@ -848,6 +868,6 @@ describe("symlink hardening and file modes", () => {
     const dataDir = makeRoot()
     const lock = acquireSetupLock({ dataDir, pid: 111, alive: () => true })
     expect(lock.status).toBe("acquired")
-    expect(statSync(join(dataDir, RUNTIME_LOCK_FILE)).mode & 0o077).toBe(0)
+    expectPrivateFile(join(dataDir, RUNTIME_LOCK_FILE))
   })
 })

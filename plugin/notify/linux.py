@@ -7,6 +7,17 @@ message through the voice daemon socket — the daemon is the only process
 allowed to touch the speaker; this module never synthesizes audio and never
 imports the engine stack.
 
+Interpreter note: this package runs wherever it is loaded — in the voice MCP
+that is a venv, and a venv sees no distro site-packages, so `import gi`
+(python3-gi) fails there even though the system python3 has it. When this
+interpreter cannot import gi, show_card() does NOT give up: the very same
+card is launched under the SYSTEM python3 (shutil.which("python3"), never
+the venv's own interpreter) through notify/__main__.py — the packaged
+runner, stdlib + gi only, detached and alive exactly as long as the card.
+The contract travels with it unchanged: one button ("Ouvir mensagem" /
+"Listen"), the click plays through the daemon transport, close-once, never
+re-banner — and the runner never falls back again (it IS the fallback).
+
 Lifecycle (checked against the freedesktop Desktop Notifications spec and
 the libnotify docs):
   * card.show() happens exactly once — the card is never re-shown (no
@@ -34,6 +45,9 @@ from __future__ import annotations
 import html
 import json
 import os
+import shutil
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -45,6 +59,9 @@ CARD_TIMEOUT_SECONDS = 300       # self-close; the card is never re-shown after
 SHOW_TIMEOUT_SECONDS = 5         # max wait for the notification server to show
 SOCKET_TIMEOUT_SECONDS = 900     # playback may wait its turn on the daemon
 ACTION_KEY = "listen"            # ActionInvoked action_key
+FALLBACK_MODULE = "notify"       # `python3 -m notify '<json>'` (the runner)
+GI_FALLBACK_FIX = ("the system python3 provides gi; the fallback launcher "
+                   "covers it")
 
 
 def socket_path() -> Path:
@@ -290,6 +307,148 @@ class _Card:
                 pass
 
 
+# ------------------------------------------------------------- gi & strings
+def _import_gi():
+    """(GLib, Notify) of THIS interpreter — or raise. The import opens no
+    D-Bus connection and shows nothing (the same probe
+    voice/permissions.py performs)."""
+    import gi
+    gi.require_version("Notify", "0.7")
+    from gi.repository import GLib, Notify
+    return GLib, Notify
+
+
+def _make_card(Notify, GLib, text: str, *, butler: str, language: str,
+               context: str | None, urgency: str, play: bool):
+    """(_Card, strings, level): the ONE place card fields are built — the
+    in-process card and the fallback runner share it byte for byte."""
+    strings = strings_for(language, butler)
+    level = normalize_urgency(urgency)
+    body = html.escape(text)               # body markup: escape, then <b>
+    if context and context.strip():
+        body = f"<b>{html.escape(context.strip())}</b>\n{body}"
+    card = _Card(Notify, GLib, text=text, title=strings["title"], body=body,
+                 button=strings["button"], urgency=level, context=context,
+                 play=bool(play))
+    return card, strings, level
+
+
+def _shown_payload(strings: dict, level: str, play: bool, *,
+                   via: str = "in-process") -> dict:
+    return {"status": "shown", "backend": "linux", "via": via,
+            "title": strings["title"], "button": strings["button"],
+            "language": strings["language"], "urgency": level,
+            "play": bool(play), "timeout_seconds": CARD_TIMEOUT_SECONDS,
+            "next_step": ("Nothing else to do: the card shows the message and its "
+                          "button plays it. Do not ask the user in chat to confirm.")}
+
+
+# ------------------------------------------------- system-interpreter fallback
+def _system_python() -> str | None:
+    """The distro python3 — the interpreter whose gi the distro ships —
+    resolved with shutil.which and NEVER the venv's own interpreter. Inside
+    a venv the first PATH hit is the venv's python3, which sees no system
+    site-packages (no gi): the directory of sys.executable is dropped from
+    PATH before the lookup."""
+    path = os.environ.get("PATH") or ""
+    try:
+        in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    except Exception:
+        in_venv = False
+    if in_venv and sys.executable:
+        here = os.path.dirname(os.path.abspath(sys.executable))
+        path = os.pathsep.join(entry for entry in path.split(os.pathsep)
+                               if entry and os.path.abspath(entry) != here)
+    try:
+        found = shutil.which("python3", path=path) if path else \
+            shutil.which("python3")
+    except Exception:
+        found = None
+    return found or None
+
+
+def _show_via_system_python(text: str, *, butler: str, language: str,
+                            context: str | None, urgency: str, play: bool,
+                            problem: str) -> dict:
+    """The same card through the SYSTEM interpreter (the fallback launcher).
+
+    Why: this interpreter has no gi — the voice MCP's venv never carries
+    distro python3-gi — while the distro's own python3 does. The packaged
+    runner (notify/__main__.py, `python3 -m notify '<json>'`, stdlib + gi
+    only) shows the very same card under that interpreter. Detached: the
+    runner owns the whole card lifecycle (show, button, close-once) and this
+    call returns as soon as it is launched — non-blocking like the
+    in-process path. The runner never falls back again: it IS the fallback.
+
+    `problem` is the local import failure, kept for diagnosability."""
+    unavailable = ("python3-gi / Notify unavailable in this interpreter: "
+                   f"{problem}")
+    py = _system_python()
+    if py is None:
+        return {"status": "unavailable",
+                "problem": (unavailable + "; and no system python3 on PATH "
+                            "for the fallback launcher"),
+                "next_step": (GI_FALLBACK_FIX + " — install the distro python3 "
+                              "with python3-gi and the Notify typelib "
+                              "(libnotify) to show cards; until then use the "
+                              "chat confirmation.")}
+    spec = {"text": text, "butler": butler, "language": language,
+            "context": context, "urgency": urgency, "play": bool(play)}
+    argv = [py, "-m", FALLBACK_MODULE, json.dumps(spec, ensure_ascii=False)]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (root + os.pathsep + env["PYTHONPATH"]
+                         if env.get("PYTHONPATH") else root)
+    try:
+        subprocess.Popen(argv, cwd=root, env=env, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except Exception as e:
+        return {"status": "unavailable",
+                "problem": (unavailable + "; and the fallback launcher "
+                            f"failed to start: {e!r}"),
+                "next_step": (GI_FALLBACK_FIX + " — install the distro python3 "
+                              "with python3-gi and the Notify typelib "
+                              "(libnotify) to show cards; until then use the "
+                              "chat confirmation.")}
+    strings = strings_for(language, butler)
+    level = normalize_urgency(urgency)
+    return _shown_payload(strings, level, bool(play), via="system-python")
+
+
+def show_card_blocking(text: str, *,
+                       butler: str = "Sebas",
+                       language: str = "en-us",
+                       context: str | None = None,
+                       urgency: str = "critical",
+                       play: bool = True) -> dict:
+    """The fallback runner's entry: ONE card on THIS thread, until it
+    closes (the runner process lives exactly the card lifetime).
+
+    Same contract as show_card — one button, the click plays the FULL text
+    through the daemon transport, close-once, never re-banner, play=False is
+    a true dry run — but it NEVER launches another fallback: this process
+    already is one. Returns the show_card payload once the card closed."""
+    text = (text or "").strip()
+    if not text:
+        return {"status": "error", "problem": "empty text",
+                "next_step": "Pass the message to show on the card."}
+    try:
+        GLib, Notify = _import_gi()
+    except Exception as e:
+        return {"status": "unavailable",
+                "problem": f"python3-gi / Notify unavailable: {e!r}",
+                "next_step": ("Install python3-gi and the Notify typelib "
+                              "(libnotify) in the system python3 to show "
+                              "cards; until then use the chat confirmation.")}
+    card, strings, level = _make_card(Notify, GLib, text, butler=butler,
+                                      language=language, context=context,
+                                      urgency=urgency, play=play)
+    result = card.run()                    # until the card closes
+    return result or _shown_payload(strings, level, bool(play),
+                                    via="system-python")
+
+
 def show_card(text: str, *,
               butler: str = "Sebas",
               language: str = "en-us",
@@ -300,7 +459,13 @@ def show_card(text: str, *,
     ("Ouvir mensagem" / "Listen"). Clicking plays the FULL text through the
     voice daemon (confirmed semantics), then closes the card. The card
     closes by itself after a timeout and is NEVER re-shown (no re-banner).
-    Non-blocking for the caller. Returns {"status": "shown"|"error", ...}.
+    Non-blocking for the caller. Returns {"status": "shown"|"error"|
+    "unavailable", ...}.
+
+    When THIS interpreter has no gi, the same card is launched under the
+    system python3 through the packaged runner (see _show_via_system_python)
+    and the reply is "shown" with via="system-python"; only a missing system
+    python3 (or a launcher that will not start) comes back "unavailable".
 
     butler   card title uses it
     language "en-us" | "pt-br" — button label language
@@ -312,24 +477,15 @@ def show_card(text: str, *,
     if not text:
         return {"status": "error", "problem": "empty text",
                 "next_step": "Pass the message to show on the card."}
-    strings = strings_for(language, butler)
-    level = normalize_urgency(urgency)
-    body = html.escape(text)               # body markup: escape, then <b>
-    if context and context.strip():
-        body = f"<b>{html.escape(context.strip())}</b>\n{body}"
     try:
-        import gi
-        gi.require_version("Notify", "0.7")
-        from gi.repository import GLib, Notify
+        GLib, Notify = _import_gi()
     except Exception as e:
-        return {"status": "error",
-                "problem": f"python3-gi / Notify unavailable: {e!r}",
-                "next_step": ("Install python3-gi and the Notify typelib "
-                              "(libnotify) to show cards; until then use the "
-                              "chat confirmation.")}
-    card = _Card(Notify, GLib, text=text, title=strings["title"], body=body,
-                 button=strings["button"], urgency=level, context=context,
-                 play=bool(play))
+        return _show_via_system_python(text, butler=butler, language=language,
+                                       context=context, urgency=urgency,
+                                       play=play, problem=repr(e))
+    card, strings, level = _make_card(Notify, GLib, text, butler=butler,
+                                      language=language, context=context,
+                                      urgency=urgency, play=play)
     threading.Thread(target=card.run, name="sebas-card", daemon=True).start()
     if not card.shown.wait(SHOW_TIMEOUT_SECONDS) and card.result is None:
         return {"status": "error",
@@ -338,9 +494,4 @@ def show_card(text: str, *,
                               "notice and the chat confirmation.")}
     if card.result:                        # run() failed before/while showing
         return card.result
-    return {"status": "shown", "backend": "linux",
-            "title": strings["title"], "button": strings["button"],
-            "language": strings["language"], "urgency": level,
-            "play": bool(play), "timeout_seconds": CARD_TIMEOUT_SECONDS,
-            "next_step": ("Nothing else to do: the card shows the message and its "
-                          "button plays it. Do not ask the user in chat to confirm.")}
+    return _shown_payload(strings, level, bool(play))

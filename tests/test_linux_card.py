@@ -103,11 +103,17 @@ class LinuxCardLifecycleTest(unittest.TestCase):
             play.assert_not_called()
             self.assertEqual(card.close_calls, 1)
 
-    def test_missing_gi_is_an_error_payload(self):
-        with mock.patch.dict(sys.modules, {"gi": None}):
+    def test_missing_gi_without_a_system_python_is_unavailable(self):
+        # No gi AND no system python3 to fall back to: the documented
+        # 'unavailable' payload, and nothing is ever spawned (the spawn
+        # itself is covered in test_linux_fallback_runner.py).
+        with mock.patch.dict(sys.modules, {"gi": None}), \
+             mock.patch.object(linux.shutil, "which", return_value=None), \
+             mock.patch.object(linux.subprocess, "Popen") as popen:
             result = linux.show_card("Full agent message.", play=False)
-        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["status"], "unavailable")
         self.assertIn("python3-gi", result["problem"])
+        popen.assert_not_called()
 
     def test_empty_text_is_rejected(self):
         result = linux.show_card("   ", play=False)

@@ -109,5 +109,26 @@ class DataDirNormalizationTest(_ScriptsCase):
         self.assertIn('Test-Path (Join-Path $DataHome "voz")', self.setup_ps1)
 
 
+class PyGObjectBestEffortTest(_ScriptsCase):
+    """Cards under Linux need gi; the venv install of it is TOLERANT."""
+
+    def test_setup_sh_installs_pygobject_tolerantly(self):
+        # Never a hard requirement: the system python usually already has
+        # gi, building PyGObject needs girepository headers we do not want
+        # to require, and the card launcher falls back to the system
+        # interpreter when the venv lacks gi (notify/linux.py).
+        line = next((entry for entry in self.setup_sh.splitlines()
+                     if "PyGObject" in entry and "pip install" in entry), None)
+        self.assertIsNotNone(line, "setup.sh never installs PyGObject")
+        self.assertIn("pip install -q PyGObject", line)
+        self.assertTrue(line.rstrip().endswith("|| true"),
+                        "the PyGObject install must stay tolerant")
+
+    def test_setup_ps1_needs_no_pygobject(self):
+        # Windows cards use toasts (PowerShell), never gi — and macOS uses
+        # terminal-notifier/herald: only the Linux path touches PyGObject.
+        self.assertNotIn("PyGObject", self.setup_ps1)
+
+
 if __name__ == "__main__":
     unittest.main()

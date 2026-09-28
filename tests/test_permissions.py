@@ -72,7 +72,7 @@ def _expected_os() -> str:
 # What each per-OS probe can possibly answer (mirrors the _linux/_darwin/_win
 # report functions in voice/permissions.py). A state outside its OS table
 # means the WRONG probe ran on this box.
-_OS_BACKEND_KEYS = {"linux": ("python_gi_notify", "gdbus"),
+_OS_BACKEND_KEYS = {"linux": ("python_gi_notify", "system_python3", "gdbus"),
                     "darwin": ("terminal_notifier", "herald"),
                     "win32": ("powershell", "burnttoast")}
 _OS_PERMISSION_STATES = {"linux": ("not_required", "unknown"),
@@ -185,6 +185,28 @@ class LinuxProbeTest(_McpCase):
             backend = perms._linux_backend()
         self.assertFalse(backend["available"])
         self.assertIn("missing", backend["detail"])
+
+    def test_backend_gi_missing_names_the_fallback_fix(self):
+        # The venv has no gi; the system python3 does and the fallback
+        # launcher shows the cards — the detail must say exactly that.
+        perms = self.permissions
+        with mock.patch.object(perms, "_gi_notify_available", return_value=False), \
+             mock.patch.object(perms, "_has", return_value=True):
+            backend = perms._linux_backend()
+        self.assertTrue(backend["available"])
+        self.assertFalse(backend["python_gi_notify"])
+        self.assertTrue(backend["system_python3"])
+        self.assertIn("the system python3 provides gi; the fallback launcher "
+                      "covers it", backend["detail"])
+
+    def test_backend_unavailable_names_the_fix_in_next_step(self):
+        perms = self.permissions
+        report = {"backend": {"available": False},
+                  "permission": {"state": "not_required"},
+                  "dnd": {"state": "unknown"},
+                  "cards": {"available": True}}
+        self.assertIn("the system python3 provides gi; the fallback launcher "
+                      "covers it", perms._next_step(report))
 
     def test_dnd_off_when_gnome_show_banners_true(self):
         perms = self.permissions
