@@ -27,11 +27,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
+# Host-truth import plumbing: os.path strings, never pathlib — the CWD
+# guard's simulation flips pathlib (test_no_cwd_artifacts.py).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _load(name: str, relpath: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / relpath)
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(ROOT, relpath))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

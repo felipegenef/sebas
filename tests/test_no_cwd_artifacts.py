@@ -33,10 +33,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin"))
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PLUGIN_DIR = os.path.join(os.path.dirname(_TESTS_DIR), "plugin")
+sys.path.insert(0, _TESTS_DIR)    # _support
+sys.path.insert(0, _PLUGIN_DIR)   # notify package
 
 from _support import mcp_root
 
@@ -45,26 +47,34 @@ from _support import mcp_root
 def windows_flavour():
     """A faithful Windows-platform simulation: os.name == "nt" (the platform
     predicates take the Windows branch) with pathlib.Path construction kept
-    host-native (a WindowsPath cannot be born on a POSIX build). The path
+    host-native (the host's concrete class: a WindowsPath cannot be born on
+    a POSIX build, nor a PosixPath on a Windows one). The path
     STRING flavour is pinned to the stock pathlib for the block, whatever an
     ambient simulation does: a real Windows pathlib hands the OS strings it
     knows how to resolve, while backslash strings reach a POSIX kernel as
     literal names — composing with an ambient shim would test the shim, not
     the code under test. Run inside a fresh interpreter (see _inner_main)."""
     original_new = pathlib.Path.__new__
+    # The class this host can actually BIRTH: a WindowsPath cannot be born
+    # on a POSIX build and a PosixPath cannot be born on a Windows one (the
+    # stdlib's own __new__ guard), so construction must target the real host
+    # class — every derived path (parent, /, resolve) rebuilds through
+    # type(self) and must not hit that guard.
+    host_path = (pathlib.WindowsPath if os.name == "nt"
+                 else pathlib.PosixPath)
 
     def host_native(cls, *args, **kwargs):
-        return original_new(pathlib.PosixPath, *args, **kwargs)
+        return original_new(host_path, *args, **kwargs)
 
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(os, "name", "nt"))
         stack.enter_context(mock.patch.object(
             pathlib.Path, "__new__", staticmethod(host_native)))
         stack.enter_context(mock.patch.object(
-            pathlib.PosixPath, "__str__", pathlib.PurePath.__str__,
+            host_path, "__str__", pathlib.PurePath.__str__,
             create=True))
         stack.enter_context(mock.patch.object(
-            pathlib.PosixPath, "__fspath__", pathlib.PurePath.__fspath__,
+            host_path, "__fspath__", pathlib.PurePath.__fspath__,
             create=True))
         yield
 
@@ -75,6 +85,10 @@ def _inner_main(argv):
     run the named suites. Reports what happened and what stayed behind as
     one JSON line after a sentinel — the guarded tests may print anything."""
     scratch, names = argv[1], argv[2:]
+    # Import plumbing pinned to host-truth entries BEFORE the flavour flip,
+    # so _support and the voice/notify packages always resolve.
+    sys.path.insert(0, _TESTS_DIR)
+    sys.path.insert(0, _PLUGIN_DIR)
     os.chdir(scratch)
     tempfile.tempdir = scratch
     with windows_flavour():

@@ -19,17 +19,19 @@ import types
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
+# Host-truth import plumbing: os.path strings, never pathlib — the CWD
+# guard's simulation flips pathlib (test_no_cwd_artifacts.py).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The notify/ package ships inside the plugin package (plugin/notify).
-PLUGIN_ROOT = ROOT / "plugin"
+PLUGIN_ROOT = os.path.join(ROOT, "plugin")
 
 ACTION_KEY = "listen"
 
 
-def plugin_on_path() -> Path:
+def plugin_on_path() -> str:
     """Puts the plugin directory on sys.path so `import notify` works."""
-    if str(PLUGIN_ROOT) not in sys.path:
-        sys.path.insert(0, str(PLUGIN_ROOT))
+    if PLUGIN_ROOT not in sys.path:
+        sys.path.insert(0, PLUGIN_ROOT)
     return PLUGIN_ROOT
 
 

@@ -14,6 +14,7 @@ audio. Rules under test:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -22,7 +23,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin"))
+# Host-truth import plumbing: os.path strings, never pathlib — the CWD
+# guard's simulation flips pathlib (test_no_cwd_artifacts.py).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "plugin"))
 
 from _support import af_unix_removed, mcp_root
 

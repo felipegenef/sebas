@@ -22,8 +22,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tests"))
+# Host-truth import plumbing: os.path strings, never pathlib — the CWD
+# guard's simulation flips pathlib (test_no_cwd_artifacts.py).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 from _support import af_unix_removed, serve_one  # noqa: E402
 
@@ -34,7 +36,8 @@ def _load(name: str, relpath: str):
     Why: notify/__init__.py is owned by another part of the project and may
     import platform code; the adapters must be testable standalone.
     """
-    spec = importlib.util.spec_from_file_location(name, ROOT / relpath)
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(ROOT, relpath))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

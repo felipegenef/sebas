@@ -33,9 +33,11 @@ import threading
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "plugin"))
-sys.path.insert(0, str(ROOT / "plugin" / "mcp" / "voice"))
+# Host-truth import plumbing: os.path strings, never pathlib — the CWD
+# guard's simulation flips pathlib (test_no_cwd_artifacts.py).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "plugin"))
+sys.path.insert(0, os.path.join(ROOT, "plugin", "mcp", "voice"))
 
 from _support import af_unix_removed, attr_removed, serve_one  # noqa: E402
 from notify import transport as notify_transport  # noqa: E402
@@ -46,9 +48,9 @@ class MirrorParityTest(unittest.TestCase):
     """The notify copy must stay byte-identical with the voice copy."""
 
     def test_files_are_byte_identical(self):
-        voice = (ROOT / "plugin" / "mcp" / "voice" / "voice" /
+        voice = (Path(ROOT) / "plugin" / "mcp" / "voice" / "voice" /
                  "transport.py").read_bytes()
-        notify = (ROOT / "plugin" / "notify" / "transport.py").read_bytes()
+        notify = (Path(ROOT) / "plugin" / "notify" / "transport.py").read_bytes()
         self.assertEqual(voice, notify,
                          "notify/transport.py drifted from voice/transport.py")
 

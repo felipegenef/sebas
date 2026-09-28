@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -35,9 +36,11 @@ from unittest import mock
 
 from _support import ROOT, mcp_root
 
-PROBE = ROOT / "scripts" / "rpc_probe.py"
+# Host-truth import plumbing: os.path strings, never pathlib — the CWD
+# guard's simulation flips pathlib (test_no_cwd_artifacts.py).
+PROBE = os.path.join(ROOT, "scripts", "rpc_probe.py")
 
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import rpc_probe  # noqa: E402  the unit under test (stdlib only)
 
 # The stub server: replies to voice_status and speak with the same envelope
@@ -196,7 +199,7 @@ class EndpointNamesMirrorTheTransportTest(unittest.TestCase):
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
         from voice import transport
-        source = PROBE.read_text(encoding="utf-8")
+        source = Path(PROBE).read_text(encoding="utf-8")
         for name in (transport.UNIX_SOCK_NAME, transport.PORT_FILE_NAME):
             self.assertIn(f'"{name}"', source,
                           f"rpc_probe must refuse on a live {name}")

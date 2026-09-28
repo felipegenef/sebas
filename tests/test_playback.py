@@ -17,8 +17,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))   # for _support
+# Host-truth import plumbing: os.path strings, never pathlib — the CWD
+# guard's simulation flips pathlib (test_no_cwd_artifacts.py).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "plugin"))
+sys.path.insert(0, _HERE)   # for _support
 
 import notify.linux as linux
 from _support import serve_one
