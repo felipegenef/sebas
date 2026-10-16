@@ -3,9 +3,9 @@
 
 Why this exists: the install smoke test must prove the INSTALLED artifact
 speaks the MCP protocol before anything reaches a user. The probe starts the
-server exactly the way the plugin launches it, writes two requests to its
-stdin (voice_status, then speak) and checks the two replies against the
-contract the plugin relies on:
+server exactly the way the plugin launches it, writes three requests to its
+stdin (voice_status, then speak, then the utf8-echo) and checks the replies
+against the contract the plugin relies on:
 
   * --mode installing  the runtime is absent: both replies must say
                        {"status": "installing", ...} — the clear 'not yet'
@@ -14,6 +14,14 @@ contract the plugin relies on:
   * --mode ok          the runtime is installed: voice_status must answer
                        {"status": "ok"} with the model present, and speak must
                        produce a real .wav while reporting "played": false.
+  * (both modes)       the utf8-echo: a THIRD request whose method name is
+                       `meu nome é Sebas €` must come back in the -32601
+                       echo verbatim. JSON-RPC is UTF-8 always; when a
+                       Windows host spawns the server without PYTHONUTF8,
+                       the server used to read stdin as cp1252 ('é' became
+                       'Ã©' and the lone '©' was SPOKEN aloud in pt-br as
+                       "símbolo de copyright"). The echo's reply of the
+                       installed server re-proves the stdio fix in CI.
 
 Host-independent by design: stdlib only, no imports from the plugin, no
 machine paths baked in. HOW the server is launched is resolved here the same
@@ -65,9 +73,26 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 _SPEAK_TEXT = "This is a CI probe of the voice runtime."
 _SPEAK_CONTEXT = "CI install smoke test (synthesis only, never played)"
 
+# The utf8-echo request: its METHOD name re-travels non-ASCII start to
+# finish, and the pair is chosen so a REGRESSION cannot hide in the echo.
+# JSON-RPC is UTF-8 always; when a Windows host spawns the server without
+# PYTHONUTF8 the server read stdin as cp1252, 'é' (C3 A9) became the pair
+# 'Ã©' and the lone '©' was SPOKEN aloud in pt-br as "símbolo de copyright".
+# A reverting fix survives a plain 'é' echo byte-for-byte (cp1252 RE-encodes
+# the mojibake pair 'Ã©' back into the original C3 A9, so the client-side
+# bytes look intact again) — but the mojibake pair of '€' (E2 82 AC) contains
+# the byte 0x82, which cp1252 cannot ENCODE: a broken build cannot even
+# answer the echo back, it dies mid-write instead, and the probe fails
+# loudly. On the fixed build the echo is asserted as a -32601 message
+# quoting the method verbatim.
+_ECHO_METHOD = "meu nome é Sebas €"
+_ECHO_ID = 3
+
 
 def _requests() -> list[dict]:
-    """The probe's whole conversation: status first, then a dry-run speak."""
+    """The probe's whole conversation: status first, then a dry-run speak,
+    then the utf8-echo (unknown method on purpose: its echo re-travels the
+    accented method verbatim, proving stdio is UTF-8 in both directions)."""
     return [
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
          "params": {"name": "voice_status", "arguments": {}}},
@@ -77,6 +102,7 @@ def _requests() -> list[dict]:
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
          "params": {"name": "speak", "arguments": {
              "text": _SPEAK_TEXT, "context": _SPEAK_CONTEXT, "play": False}}},
+        {"jsonrpc": "2.0", "id": _ECHO_ID, "method": _ECHO_METHOD},
     ]
 
 
@@ -295,6 +321,34 @@ def _probe(args, data_home: Path, cmd: list[str], err_file) -> int:
 
     problems: list[str] = []
     results: dict[int, dict] = {}
+
+    # The utf8-echo is EXPECTED to be a -32601 error whose message quotes
+    # the accented method verbatim (the unknown-method echo). Anything else
+    # — a mojibake message, a non-error reply, no reply (the broken build
+    # dies mid-write re-encoding '€') — is the ANSI-codepage regression,
+    # named so the failure spells the symptom the user heard.
+    echo = replies.pop(_ECHO_ID, None)
+    echo_message = None
+    if isinstance(echo, dict) and isinstance(echo.get("error"), dict):
+        candidate = echo["error"].get("message")
+        if (isinstance(candidate, str) and _ECHO_METHOD in candidate
+                and "Ã©" not in candidate):
+            echo_message = candidate
+    if echo is None:
+        problems.append(
+            "utf8-echo: no reply for the accented method name (a server on "
+            "the Windows ANSI stdio codepage cannot even re-encode the "
+            "echo: cp1252 has no byte for the €'s corrupt pair)")
+    elif echo_message is None:
+        problems.append(
+            "utf8-echo: the accented method name did not round-trip "
+            "through stdio (JSON-RPC is UTF-8 always — under the Windows "
+            "ANSI codepage the server reads 'é' as 'Ã©' and the lone '©' "
+            'gets SPOKEN aloud as "símbolo de copyright")')
+    else:
+        print("--- utf8 echo (-32601) ---")
+        print(echo_message)
+
     for rid in sorted(replies):
         msg = replies[rid]
         if "error" in msg:

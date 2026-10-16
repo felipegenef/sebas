@@ -50,6 +50,17 @@ _STUB = r'''
 import json, os, sys
 from pathlib import Path
 
+# The stub answers as server.py does — INCLUDING the stdio contract: the
+# fixed server reconfigures the three streams to UTF-8 at startup (JSON-RPC
+# is UTF-8 always; a Windows host leaves pipe stdio on the ANSI codepage).
+# Without this the stub's accented echo lands on the pipe as cp1252 bytes
+# and the probe's strict-UTF-8 parent chokes on the Windows runners.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 scratch = Path(os.environ["STUB_SCRATCH"])
 received = scratch / "received.jsonl"
 wav = scratch / "stub.wav"
@@ -69,6 +80,17 @@ for line in sys.stdin:
     req = json.loads(line)
     with received.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
+    if req.get("method") != "tools/call":
+        # Mirror server.py: unknown methods answer the -32601 echo that
+        # quotes the method verbatim (the probe's utf8-echo check drives
+        # exactly this envelope).
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0", "id": req.get("id"),
+            "error": {"code": -32601,
+                      "message": f"method not supported: {req.get('method')}"
+            }}) + "\n")
+        sys.stdout.flush()
+        continue
     name = (req.get("params") or {}).get("name")
     if name == "voice_status":
         payload = {"status": "ok", "model": "ok", "engine": "stub"}

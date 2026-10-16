@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.0.3 — 2026-10-15
+
+**Windows: no more spoken "© copyright" garbage.** On Windows a greeting
+like "my name is …" was spoken as "my name is © copyright symbol …".
+Cause: `server.py` never reconfigured stdio, so a host that spawns the
+server without `PYTHONUTF8` / `PYTHONIOENCODING` (every Windows MCP load)
+left the pipes on the system ANSI codepage — cp1252. JSON-RPC is always UTF-8, so every non-ASCII byte decoded
+as TWO wrong characters: `é` (C3 A9) read as `Ã©`, and the lone `©`
+traveled to espeak, which reads it aloud in pt-br as "símbolo de copyright".
+POSIX defaults to UTF-8, which is why the bug never showed on Linux/macOS —
+and why it corrupted ANY accented text on Windows.
+
+- **The three std streams are forced to UTF-8 at startup** (`_use_utf8_stdio`
+  in `server.py`): `stdin`, `stdout`, `stderr` are `reconfigure(encoding=
+  "utf-8")`-d before the first request is read, each stream guarded —
+  captured/redirected streams (tests) and interpreters without
+  `TextIOWrapper.reconfigure` gain nothing and must not crash startup.
+  Both directions heal at once: the incoming JSON-RPC and the replies.
+- **The corruption is one-way INTO the engine** — a cp1252 round trip can
+  even re-produce the original UTF-8 bytes on the reply side, which is why
+  the client saw nothing and only the spoken audio betrayed it. The bytes
+  of `€` (E2 82 AC), however, contain 0x82, which cp1252 cannot encode at
+  all: a regressed build cannot even answer an echo containing it.
+- **Tests pin it on every host** (`tests/test_windows_stdio_encoding.py`):
+  an in-process `main()` driven from a cp1252 wrapper over the real UTF-8
+  request bytes (the exact Windows condition) must still decode `é` intact;
+  guarded streams (StringIO, no-reconfigure stubs) must not break startup;
+  and the real `server.py`, spawned in the portable replica of the Windows
+  spawn environment (`PYTHONIOENCODING=cp1252`, pinned first to really start
+  all three streams as cp1252) answers bytes that decode strictly as UTF-8.
+  Proven to fail against the pre-fix server.
+- **The CI install smoke re-proves it on real Windows**
+  (`scripts/rpc_probe.py`): a third request whose method name is
+  `meu nome é Sebas €` must echo back verbatim in the -32601 message —
+  the echo rides an unknown method, so it needs no runtime, runs in both
+  probe modes, and on `windows-latest` drives the installed server's REAL
+  Windows stdio. On any regressed build the € echo cannot come back
+  (cp1252 cannot encode its mojibake), so the probe fails loudly.
+
 ## 1.0.2 — 2026-09-27
 
 **The butler asks who you are instead of assuming.** On a fresh install the

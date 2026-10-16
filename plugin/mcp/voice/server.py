@@ -17,6 +17,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 PROTOCOL = "2024-11-05"
 NAME = "voice"
 
+
+def _use_utf8_stdio() -> None:
+    """JSON-RPC over stdio is UTF-8, always — so are the three std streams.
+
+    But the host that spawns this server may leave them on the system ANSI
+    codepage: Windows starts piped stdio as cp1252 whenever PYTHONUTF8 /
+    PYTHONIOENCODING are not set (POSIX defaults to UTF-8, which is why the
+    bug never showed there). Every UTF-8 byte then decodes as TWO wrong
+    characters: 'é' (C3 A9) reads as 'Ã©' — and '©' went to espeak, which
+    speaks it in pt-br as 'símbolo de copyright'. Each stream is guarded:
+    captured/redirected streams (tests) and interpreters without
+    TextIOWrapper.reconfigure gain nothing and must not crash startup."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass
+
 INSTRUCTIONS = (
     "Voice server for speaking to the human user. Speech always uses the "
     "CONFIGURED language (default English; set_language changes it) and the "
@@ -134,6 +152,7 @@ def handle(req: dict):
 
 
 def main():
+    _use_utf8_stdio()
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:
